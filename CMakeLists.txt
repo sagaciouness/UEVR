@@ -809,6 +809,7 @@ list(APPEND uevr_SOURCES
 	"src/uevr-imgui/uevr_imconfig.hpp"
 	"src/utility/ImGui.hpp"
 	"src/utility/Logging.hpp"
+	"src/utility/NrcDebug.hpp"
 	"src/uevr-imgui/imgui_impl_dx11.h"
 	"src/uevr-imgui/imgui_impl_dx12.h"
 	"src/uevr-imgui/imgui_impl_win32.h"

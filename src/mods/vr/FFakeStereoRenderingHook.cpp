@@ -55,6 +55,7 @@
 #include <sdk/threading/RHIThreadWorker.hpp>
 #include "../VR.hpp"
 #include "../../utility/Logging.hpp"
+#include "../../utility/NrcDebug.hpp"
 
 #include "FFakeStereoRenderingHook.hpp"
 
@@ -64,6 +65,231 @@
 
 FFakeStereoRenderingHook* g_hook = nullptr;
 uint32_t g_frame_count{};
+
+namespace {
+using NrcProbe = bool (*)(uintptr_t&);
+
+struct NrcStereoSlotProbe {
+    uintptr_t object{};
+    uintptr_t reference_controller{};
+    uintptr_t object_vtable{};
+    uintptr_t first_function{};
+    DWORD state{};
+    DWORD protect{};
+    DWORD exception_code{};
+    bool readable{};
+    bool writable{};
+    bool write_succeeded{};
+};
+
+struct NrcStereoVtableEntryProbe {
+    uintptr_t vtable{};
+    uintptr_t function{};
+    DWORD exception_code{};
+};
+
+bool nrc_is_writable_page(DWORD protect) {
+    if ((protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0) {
+        return false;
+    }
+
+    switch (protect & 0xFF) {
+    case PAGE_READWRITE:
+    case PAGE_WRITECOPY:
+    case PAGE_EXECUTE_READWRITE:
+    case PAGE_EXECUTE_WRITECOPY:
+        return true;
+    default:
+        return false;
+    }
+}
+
+NrcStereoSlotProbe nrc_install_fallback_stereo_device(uintptr_t slot, uintptr_t device, bool replace_existing = false) {
+    NrcStereoSlotProbe result{};
+    MEMORY_BASIC_INFORMATION memory{};
+
+    if (VirtualQuery(reinterpret_cast<void*>(slot), &memory, sizeof(memory)) == 0) {
+        return result;
+    }
+
+    result.state = memory.State;
+    result.protect = memory.Protect;
+
+    const auto region_begin = reinterpret_cast<uintptr_t>(memory.BaseAddress);
+    const auto region_end = region_begin + memory.RegionSize;
+    result.readable = memory.State == MEM_COMMIT && slot >= region_begin && slot <= region_end && region_end - slot >= sizeof(uintptr_t) * 2
+        && (memory.Protect & (PAGE_GUARD | PAGE_NOACCESS)) == 0;
+    result.writable = result.readable && nrc_is_writable_page(memory.Protect);
+
+    if (!result.readable) {
+        return result;
+    }
+
+    __try {
+        result.object = reinterpret_cast<uintptr_t*>(slot)[0];
+        result.reference_controller = reinterpret_cast<uintptr_t*>(slot)[1];
+
+        if (result.object != 0 && !IsBadReadPtr(reinterpret_cast<void*>(result.object), sizeof(uintptr_t))) {
+            result.object_vtable = *reinterpret_cast<uintptr_t*>(result.object);
+            if (result.object_vtable != 0
+                && !IsBadReadPtr(reinterpret_cast<void*>(result.object_vtable), sizeof(uintptr_t))) {
+                result.first_function = *reinterpret_cast<uintptr_t*>(result.object_vtable);
+            }
+        }
+
+        const auto empty_slot = result.object == 0 && result.reference_controller == 0;
+        const auto validated_existing_slot = replace_existing
+            && result.object != 0
+            && result.reference_controller != 0
+            && result.object_vtable != 0
+            && result.first_function != 0;
+
+        if (device != 0 && result.writable && (empty_slot || validated_existing_slot)) {
+            // Preserve the existing reference controller. It continues to own the original
+            // Morefun XR object while the shared pointer aliases UEVR's process-lifetime fallback.
+            reinterpret_cast<uintptr_t*>(slot)[0] = device;
+            result.write_succeeded = reinterpret_cast<uintptr_t*>(slot)[0] == device;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        result.exception_code = GetExceptionCode();
+        result.write_succeeded = false;
+    }
+
+    return result;
+}
+
+NrcStereoVtableEntryProbe nrc_probe_stereo_vtable_entry(uintptr_t object, size_t index) {
+    NrcStereoVtableEntryProbe result{};
+
+    __try {
+        if (object == 0 || IsBadReadPtr(reinterpret_cast<void*>(object), sizeof(uintptr_t))) {
+            return result;
+        }
+
+        result.vtable = *reinterpret_cast<uintptr_t*>(object);
+        if (result.vtable == 0
+            || IsBadReadPtr(reinterpret_cast<void*>(result.vtable + (index * sizeof(uintptr_t))), sizeof(uintptr_t))) {
+            return result;
+        }
+
+        result.function = reinterpret_cast<uintptr_t*>(result.vtable)[index];
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        result.exception_code = GetExceptionCode();
+    }
+
+    return result;
+}
+
+void nrc_log_stereo_vtable(std::string_view label, uintptr_t object) {
+    if (!nrc_debug::is_target_process()) {
+        return;
+    }
+
+    for (size_t index = 0; index < 30; ++index) {
+        const auto probe = nrc_probe_stereo_vtable_entry(object, index);
+        std::string instruction_text{"<unreadable>"};
+        uintptr_t module_base{};
+
+        if (probe.function != 0 && !IsBadReadPtr(reinterpret_cast<void*>(probe.function), 1)) {
+            if (const auto decoded = utility::decode_one(reinterpret_cast<uint8_t*>(probe.function)); decoded) {
+                char text[ND_MIN_BUF_SIZE]{};
+                NdToText(&*decoded, probe.function, sizeof(text), text);
+                instruction_text = text;
+            }
+
+            if (const auto module = utility::get_module_within(reinterpret_cast<void*>(probe.function)); module) {
+                module_base = reinterpret_cast<uintptr_t>(*module);
+            }
+        }
+
+        nrc_debug::log(
+            "STEREO_VTABLE",
+            "object=" + std::string{label}
+                + " index=" + std::to_string(index)
+                + " instance=" + nrc_debug::pointer(object)
+                + " vtable=" + nrc_debug::pointer(probe.vtable)
+                + " function=" + nrc_debug::pointer(probe.function)
+                + " module_rva=" + nrc_debug::pointer(module_base == 0 ? 0 : probe.function - module_base)
+                + " instruction=" + instruction_text
+                + " exception=" + nrc_debug::pointer(probe.exception_code));
+    }
+}
+
+bool nrc_probe_engine_version(uintptr_t& result) {
+    const auto version = sdk::search_for_version(utility::get_executable());
+    if (!version) {
+        result = 0;
+        nrc_debug::log("ENGINE_VERSION", "Automatic executable scan returned no version");
+        return false;
+    }
+
+    result = 1;
+    nrc_debug::log("ENGINE_VERSION", "Automatic executable scan=" + utility::narrow(*version));
+    return true;
+}
+
+bool nrc_probe_fname_constructor(uintptr_t& result) {
+    const auto function = sdk::FName::get_constructor();
+    result = function ? reinterpret_cast<uintptr_t>(function.value()) : 0;
+    return result != 0;
+}
+
+bool nrc_probe_fname_to_string(uintptr_t& result) {
+    const auto function = sdk::FName::get_to_string();
+    result = function ? reinterpret_cast<uintptr_t>(function.value()) : 0;
+    return result != 0;
+}
+
+bool nrc_probe_uobject_array(uintptr_t& result) {
+    result = reinterpret_cast<uintptr_t>(sdk::FUObjectArray::get());
+    return result != 0;
+}
+
+bool nrc_run_probe(NrcProbe probe, uintptr_t& result, DWORD& exception_code) {
+    result = 0;
+    exception_code = 0;
+
+    __try {
+        return probe(result);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        exception_code = 1;
+        return false;
+    }
+}
+
+void nrc_log_probe(std::string_view name, NrcProbe probe) {
+    uintptr_t result{};
+    DWORD exception_code{};
+    const auto succeeded = nrc_run_probe(probe, result, exception_code);
+
+    if (exception_code != 0) {
+        nrc_debug::log(name, "SEH exception caught");
+    } else if (!succeeded) {
+        nrc_debug::log(name, "Not found; dependent stages will remain disabled");
+    } else {
+        nrc_debug::log(name, "Found at " + nrc_debug::pointer(result));
+    }
+}
+
+void nrc_run_detection_probes() {
+    nrc_debug::log("DETECTION", "Read-only detection pass begin; no UE hooks will be installed");
+    nrc_debug::log(
+        "ENGINE_VERSION",
+        "Configured override=" + nrc_debug::engine_version_override().value_or("<auto>"));
+    nrc_log_probe("ENGINE_VERSION_SCAN", nrc_probe_engine_version);
+    nrc_log_probe("FNAME_CONSTRUCTOR", nrc_probe_fname_constructor);
+    nrc_log_probe("FNAME_TO_STRING", nrc_probe_fname_to_string);
+    nrc_log_probe("GUOBJECTARRAY", nrc_probe_uobject_array);
+    nrc_debug::log("UWORLD", "Skipped in detection-only stage pending validated GUObjectArray");
+    nrc_debug::log("GAME_VIEWPORT", "Skipped in detection-only stage");
+    nrc_debug::log("LOCAL_PLAYER", "Skipped in detection-only stage");
+    nrc_debug::log("PLAYER_CONTROLLER", "Skipped in detection-only stage");
+    nrc_debug::log("CAMERA_MANAGER", "Skipped in detection-only stage");
+    nrc_debug::log("RENDERER_HOOK", "Disabled by NRCDisableUEHooks");
+    nrc_debug::log("STEREO_HOOK", "Disabled by NRCDisableUEHooks");
+    nrc_debug::log("DETECTION", "Read-only detection pass completed");
+}
+}
 
 // Scan through function instructions to detect usage of double
 // floating point precision instructions.
@@ -101,15 +327,65 @@ FFakeStereoRenderingHook::FFakeStereoRenderingHook() {
 }
 
 void FFakeStereoRenderingHook::on_frame() {
-    attempt_hook_game_engine_tick();
-    attempt_hook_slate_thread();
-    attempt_hook_fsceneview_constructor();
+    if (nrc_debug::is_target_process()) {
+        static bool logged_configuration{};
+        if (!logged_configuration) {
+            logged_configuration = true;
+            nrc_debug::log_configuration();
+        }
+
+        if (nrc_debug::disable_ue_hooks()) {
+            static bool detection_attempted{};
+            static bool stable_mode_logged{};
+
+            if (nrc_debug::detection_only() && !detection_attempted) {
+                detection_attempted = true;
+                nrc_run_detection_probes();
+            } else if (!nrc_debug::detection_only() && !stable_mode_logged) {
+                stable_mode_logged = true;
+                nrc_debug::log("STABLE_MODE", "UE object and stereo hooks are disabled");
+            }
+
+            return;
+        }
+
+        static bool enabled_logged{};
+        if (!enabled_logged) {
+            enabled_logged = true;
+            nrc_debug::log("STEREO_HOOK", "UE hook stage enabled by configuration");
+        }
+    }
+
+    try {
+        attempt_hook_game_engine_tick();
+    } catch (...) {
+        nrc_debug::log("GAME_ENGINE_TICK", "Exception caught; remaining hooks skipped for this frame");
+        return;
+    }
+
+    try {
+        attempt_hook_slate_thread();
+    } catch (...) {
+        nrc_debug::log("SLATE_HOOK", "Exception caught; remaining hooks skipped for this frame");
+        return;
+    }
+
+    try {
+        attempt_hook_fsceneview_constructor();
+    } catch (...) {
+        nrc_debug::log("RENDERER_HOOK", "FSceneView scan exception caught");
+        return;
+    }
 
     // Ideally we want to do all hooking
     // from game engine tick. if it fails
     // we will fall back to doing it here.
     if (!m_hooked_game_engine_tick && m_attempted_hook_game_engine_tick) {
-        attempt_hooking();
+        try {
+            attempt_hooking();
+        } catch (...) {
+            nrc_debug::log("STEREO_HOOK", "attempt_hooking exception caught");
+        }
     }
 }
 
@@ -230,17 +506,55 @@ void FFakeStereoRenderingHook::attempt_hooking() {
 
     // TODO: see if this can be threaded; it might not be able to because of TLS or something
     if (!VR::get()->should_skip_uobjectarray_init()) {
-        sdk::FName::get_constructor();
-        sdk::FName::get_to_string();
-        sdk::FUObjectArray::get();
+        if (nrc_debug::is_target_process()) {
+            nrc_debug::log("FNAME_CONSTRUCTOR", "Full hook stage scan begin");
+            if (!sdk::FName::get_constructor()) {
+                nrc_debug::log("FNAME_CONSTRUCTOR", "Not found; stereo initialization aborted");
+                m_tried_hooking = true;
+                return;
+            }
+
+            nrc_debug::log("FNAME_TO_STRING", "Full hook stage scan begin");
+            if (!sdk::FName::get_to_string()) {
+                nrc_debug::log("FNAME_TO_STRING", "Not found; stereo initialization aborted");
+                m_tried_hooking = true;
+                return;
+            }
+
+            nrc_debug::log("GUOBJECTARRAY", "Full hook stage scan begin");
+            if (sdk::FUObjectArray::get() == nullptr) {
+                nrc_debug::log("GUOBJECTARRAY", "Not found; stereo initialization aborted");
+                m_tried_hooking = true;
+                return;
+            }
+        } else {
+            sdk::FName::get_constructor();
+            sdk::FName::get_to_string();
+            sdk::FUObjectArray::get();
+        }
     }
 
     if (!m_injected_stereo_at_runtime) {
-        attempt_runtime_inject_stereo();
+        if (nrc_debug::skip_initialize_hmd_device()) {
+            // MorefunUE4's InitializeHMDDevice vtable slot differs from stock UE4.26.
+            // The regular hook below can install UEVR's fallback device without calling it.
+            nrc_debug::log(
+                "STEREO_DEVICE",
+                "InitializeHMDDevice bypassed; proceeding to fallback stereo device installation");
+        } else {
+            nrc_debug::log("STEREO_DEVICE", "Runtime stereo device injection begin");
+            const auto injected = attempt_runtime_inject_stereo();
+            nrc_debug::log(
+                "STEREO_DEVICE",
+                injected ? "Runtime stereo device injection succeeded" : "Runtime stereo device injection failed; continuing to hook fallback");
+        }
+
         m_injected_stereo_at_runtime = true;
     }
-    
+
+    nrc_debug::log("STEREO_HOOK", "Renderer/stereo hook installation begin");
     m_hooked = hook();
+    nrc_debug::log("STEREO_HOOK", m_hooked ? "Hook installation succeeded" : "Hook installation failed");
 }
 
 namespace detail{
@@ -689,9 +1003,18 @@ bool FFakeStereoRenderingHook::hook() {
         };
 
         const auto found_version = sdk::search_for_version(utility::get_executable());
+        const auto version_override = nrc_debug::engine_version_override();
 
         if (!found_version) {
             SPDLOG_WARN("Failed to find version in executable");
+        }
+
+        if (nrc_debug::is_target_process()) {
+            nrc_debug::log(
+                "ENGINE_VERSION",
+                "Stereo fallback automatic="
+                    + (found_version ? utility::narrow(*found_version) : std::string{"<not found>"})
+                    + " override=" + version_override.value_or("<none>"));
         }
 
         // Check for version 5.54.0.0
@@ -701,7 +1024,11 @@ bool FFakeStereoRenderingHook::hook() {
 
         // Check for version 4.27.2.0
         // 4.26 also works here
-        if (check_file_version(0x4001B, 0x20000) || found_version.value_or(L"") == L"4.26") {
+        if (check_file_version(0x4001B, 0x20000)
+            || found_version.value_or(L"") == L"4.26"
+            || version_override.value_or("") == "4.26"
+            || version_override.value_or("") == "4.27") {
+            nrc_debug::log("ENGINE_VERSION", "Selecting UE4.26/4.27 nonstandard stereo path");
             return nonstandard_create_stereo_device_hook_4_27();
         }
 
@@ -1313,10 +1640,67 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
 
             if (engine != nullptr) {
                 m_fallback_device.vtable = (void*)vtable;
-                *(uintptr_t*)((uintptr_t)engine + *device_offset) = (uintptr_t)&m_fallback_device;
+                const auto slot = reinterpret_cast<uintptr_t>(engine) + *device_offset;
 
-                active_stereo_device = (uintptr_t)&m_fallback_device;
-                s_stereo_rendering_device_offset = *device_offset; // Set it up if it's not already
+                if (nrc_debug::is_target_process()) {
+                    const auto replace_existing = nrc_debug::replace_existing_stereo_device();
+                    const auto probe = nrc_install_fallback_stereo_device(
+                        slot,
+                        reinterpret_cast<uintptr_t>(&m_fallback_device),
+                        replace_existing);
+                    nrc_debug::log(
+                        "STEREO_DEVICE_SLOT",
+                        "engine=" + nrc_debug::pointer(reinterpret_cast<uintptr_t>(engine))
+                            + " offset=" + nrc_debug::pointer(*device_offset)
+                            + " slot=" + nrc_debug::pointer(slot)
+                            + " state=" + nrc_debug::pointer(probe.state)
+                            + " protect=" + nrc_debug::pointer(probe.protect)
+                            + " object=" + nrc_debug::pointer(probe.object)
+                            + " ref=" + nrc_debug::pointer(probe.reference_controller)
+                            + " vtable=" + nrc_debug::pointer(probe.object_vtable)
+                            + " first=" + nrc_debug::pointer(probe.first_function)
+                            + " exception=" + nrc_debug::pointer(probe.exception_code));
+
+                    for (intptr_t relative = -0x40; relative <= 0x80; relative += 0x10) {
+                        const auto neighbor_slot = static_cast<uintptr_t>(static_cast<intptr_t>(slot) + relative);
+                        const auto neighbor = nrc_install_fallback_stereo_device(neighbor_slot, 0);
+                        nrc_debug::log(
+                            "STEREO_NEIGHBORHOOD",
+                            "relative=" + std::to_string(relative)
+                                + " slot=" + nrc_debug::pointer(neighbor_slot)
+                                + " object=" + nrc_debug::pointer(neighbor.object)
+                                + " ref=" + nrc_debug::pointer(neighbor.reference_controller)
+                                + " vtable=" + nrc_debug::pointer(neighbor.object_vtable)
+                                + " first=" + nrc_debug::pointer(neighbor.first_function)
+                                + " state=" + nrc_debug::pointer(neighbor.state)
+                                + " protect=" + nrc_debug::pointer(neighbor.protect)
+                                + " exception=" + nrc_debug::pointer(neighbor.exception_code));
+                    }
+
+                    nrc_log_stereo_vtable("GEngine+StereoRenderingDevice", probe.object);
+                    const auto adjacent = nrc_install_fallback_stereo_device(slot + 0x10, 0);
+                    nrc_log_stereo_vtable("GEngine+StereoRenderingDevice+0x10", adjacent.object);
+
+                    if (probe.write_succeeded) {
+                        active_stereo_device = reinterpret_cast<uintptr_t>(&m_fallback_device);
+                        s_stereo_rendering_device_offset = *device_offset;
+                        nrc_debug::log(
+                            "STEREO_DEVICE_SLOT",
+                            replace_existing && probe.object != 0
+                                ? "Validated existing Morefun stereo object replaced; reference controller preserved"
+                                : "Fallback stereo device installed into empty slot");
+                    } else {
+                        nrc_debug::log(
+                            "STEREO_DEVICE_SLOT",
+                            replace_existing
+                                ? "Fallback stereo replacement rejected; slot validation failed"
+                                : "Fallback stereo device write rejected; set NRCReplaceExistingStereoDevice=true for the validated Morefun slot");
+                    }
+                } else {
+                    *reinterpret_cast<uintptr_t*>(slot) = reinterpret_cast<uintptr_t>(&m_fallback_device);
+                    active_stereo_device = reinterpret_cast<uintptr_t>(&m_fallback_device);
+                    s_stereo_rendering_device_offset = *device_offset; // Set it up if it's not already
+                }
             }
         } else {
             SPDLOG_ERROR("Could not create a new stereo device, VR may not work!");

@@ -22,6 +22,7 @@
 #include "frameworkConfig.hpp"
 
 #include "utility/Logging.hpp"
+#include "utility/NrcDebug.hpp"
 
 #include "VR.hpp"
 
@@ -33,8 +34,13 @@ std::shared_ptr<VR>& VR::get() {
 // Called when the mod is initialized
 std::optional<std::string> VR::clean_initialize() try {
     ZoneScopedN(__FUNCTION__);
+    nrc_debug::log("VR_RUNTIME", "Runtime selection begin");
 
     auto openvr_error = initialize_openvr();
+    nrc_debug::log(
+        "OPENVR",
+        m_openvr->loaded ? "Initialization succeeded"
+                         : "Not loaded: " + m_openvr->error.value_or(openvr_error.value_or("unknown error")));
 
     if (openvr_error || !m_openvr->loaded) {
         if (m_openvr->error) {
@@ -47,6 +53,10 @@ std::optional<std::string> VR::clean_initialize() try {
 
         // Attempt to load OpenXR instead
         auto openxr_error = initialize_openxr();
+        nrc_debug::log(
+            "OPENXR",
+            m_openxr->loaded ? "Initialization succeeded"
+                             : "Not loaded: " + m_openxr->error.value_or(openxr_error.value_or("unknown error")));
 
         if (openxr_error || !m_openxr->loaded) {
             m_openxr->needs_pose_update = false;
@@ -94,6 +104,7 @@ std::optional<std::string> VR::clean_initialize() try {
 
 std::optional<std::string> VR::initialize_openvr() {
     ZoneScopedN(__FUNCTION__);
+    nrc_debug::log("OPENVR", "Initialization entered");
 
     spdlog::info("Attempting to load OpenVR");
 
@@ -242,6 +253,7 @@ std::optional<std::string> VR::initialize_openvr_input() {
 
 std::optional<std::string> VR::initialize_openxr() {
     ZoneScopedN(__FUNCTION__);
+    nrc_debug::log("OPENXR", "Initialization entered");
 
     m_openxr.reset();
     m_openxr = std::make_shared<runtimes::OpenXR>();
@@ -270,6 +282,7 @@ std::optional<std::string> VR::initialize_openxr() {
 
     // Step 1: Create an instance
     spdlog::info("[VR] Creating OpenXR instance");
+    nrc_debug::log("OPENXR_INSTANCE", "xrCreateInstance stage begin");
 
     XrResult result{XR_SUCCESS};
 
@@ -357,15 +370,18 @@ std::optional<std::string> VR::initialize_openxr() {
                     "Ensure that the OpenXR plugin has been renamed or deleted from the game's binaries folder.";
             }
             spdlog::error("[VR] {}", m_openxr->error.value());
+            nrc_debug::log("OPENXR_INSTANCE", m_openxr->error.value());
 
             return std::nullopt;
         }
     } else {
         spdlog::info("[VR] Found existing openxr instance");
     }
+    nrc_debug::log("OPENXR_INSTANCE", "Instance available");
     
     // Step 2: Create a system
     spdlog::info("[VR] Creating OpenXR system");
+    nrc_debug::log("OPENXR_SYSTEM", "xrGetSystem stage begin");
 
     // We may just be restarting OpenXR, so try to find an existing system first
     if (m_openxr->system == XR_NULL_SYSTEM_ID) {
@@ -377,12 +393,14 @@ std::optional<std::string> VR::initialize_openxr() {
         if (result != XR_SUCCESS) {
             m_openxr->error = "Could not create openxr system: " + m_openxr->get_result_string(result);
             spdlog::error("[VR] {}", m_openxr->error.value());
+            nrc_debug::log("OPENXR_SYSTEM", m_openxr->error.value());
 
             return std::nullopt;
         }
     } else {
         spdlog::info("[VR] Found existing openxr system");
     }
+    nrc_debug::log("OPENXR_SYSTEM", "System available");
 
     // Step 3: Create a session
     spdlog::info("[VR] Initializing graphics info");
@@ -396,18 +414,22 @@ std::optional<std::string> VR::initialize_openxr() {
     }
 
     spdlog::info("[VR] Creating OpenXR session");
+    nrc_debug::log("OPENXR_SESSION", "xrCreateSession stage begin");
     session_create_info.systemId = m_openxr->system;
     result = xrCreateSession(m_openxr->instance, &session_create_info, &m_openxr->session);
 
     if (result != XR_SUCCESS) {
         m_openxr->error = "Could not create openxr session: " + m_openxr->get_result_string(result);
         spdlog::error("[VR] {}", m_openxr->error.value());
+        nrc_debug::log("OPENXR_SESSION", m_openxr->error.value());
 
         return std::nullopt;
     }
+    nrc_debug::log("OPENXR_SESSION", "Session created");
 
     // Step 4: Create a space
     spdlog::info("[VR] Creating OpenXR space");
+    nrc_debug::log("OPENXR_SPACE", "Reference space creation begin");
 
     // We may just be restarting OpenXR, so try to find an existing space first
 
@@ -476,6 +498,7 @@ std::optional<std::string> VR::initialize_openxr() {
 
     m_openxr->loaded = true;
     m_runtime = m_openxr;
+    nrc_debug::log("OPENXR", "Core instance/system/session/space initialization completed");
 
     if (auto err = initialize_openxr_input()) {
         m_openxr->error = err.value();

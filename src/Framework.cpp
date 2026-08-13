@@ -18,6 +18,7 @@
 #include "utility/Thread.hpp"
 #include "utility/String.hpp"
 #include "utility/Input.hpp"
+#include "utility/NrcDebug.hpp"
 
 #include "WindowFilter.hpp"
 
@@ -95,6 +96,20 @@ void Framework::hook_monitor() {
         || (renderer_type == Framework::RendererType::D3D11 && d3d11 != nullptr && !d3d11->is_inside_present()) 
         || (renderer_type == Framework::RendererType::D3D12 && d3d12 != nullptr && !d3d12->is_inside_present())) 
     {
+        // MorefunUE4 stops presenting during some loading transitions. Reinstalling the
+        // same Present hook can recurse through its wrapper and eventually overflow the stack.
+        if (nrc_debug::disable_d3d_rehook() && m_initialized && (m_is_d3d11 || m_is_d3d12)) {
+            static bool logged_rehook_suppression{};
+            if (!logged_rehook_suppression) {
+                logged_rehook_suppression = true;
+                nrc_debug::log("RENDERER_HOOK", "Automatic D3D rehook suppressed after successful initialization");
+            }
+
+            m_last_present_time = now;
+            m_last_chance_time = now;
+            m_has_last_chance = true;
+        }
+
         // check if present time is more than 5 seconds ago
         if (now - m_last_present_time >= std::chrono::seconds(5)) {
             if (m_has_last_chance) {
@@ -129,6 +144,22 @@ void Framework::hook_monitor() {
         }
 
         if (m_initialized && m_wnd != 0 && now - m_last_message_time > std::chrono::seconds(5)) {
+            // MorefunUE4 can replace its WndProc during loading. Calling the stale proc and
+            // rebuilding our hook while messages are in flight has crashed inside USER32.
+            if (nrc_debug::disable_message_hook_reinit() && m_windows_message_hook != nullptr) {
+                static bool logged_message_hook_suppression{};
+                if (!logged_message_hook_suppression) {
+                    logged_message_hook_suppression = true;
+                    nrc_debug::log("WINDOW_MESSAGE_HOOK", "Self-test and reinitialization suppressed after initial hook");
+                }
+
+                m_last_message_time = now;
+                m_last_sendmessage_time = now;
+                m_sent_message = false;
+                m_message_hook_requested = false;
+                return;
+            }
+
             if (m_windows_message_hook != nullptr && m_windows_message_hook->is_hook_intact()) {
                 spdlog::info("Windows message hook is still intact, ignoring...");
                 m_last_message_time = now;
@@ -191,6 +222,7 @@ Framework::Framework(HMODULE framework_module)
     m_logger{spdlog::basic_logger_mt("UnrealVR", (get_persistent_dir() / "log.txt").string(), true)},
     m_vr{std::make_shared<VR>()}
 {
+    nrc_debug::log("FRAMEWORK", "Constructor entered");
     std::scoped_lock __{m_constructor_mutex};
 
     spdlog::set_default_logger(m_logger);
@@ -312,9 +344,11 @@ Framework::Framework(HMODULE framework_module)
     });
 
     spdlog::info("Leaving Framework constructor");
+    nrc_debug::log("FRAMEWORK", "Constructor completed; D3D monitor active");
 }
 
 bool Framework::hook_d3d11() {
+    nrc_debug::log("RENDERER_HOOK", "Attempting DirectX 11 Present hook");
     //if (m_d3d11_hook == nullptr) {
         m_d3d11_hook.reset();
         m_d3d11_hook = std::make_unique<D3D11Hook>();
@@ -327,6 +361,7 @@ bool Framework::hook_d3d11() {
     if (!m_is_d3d12) {
         if (m_d3d11_hook->hook()) {
             spdlog::info("Hooked DirectX 11");
+            nrc_debug::log("RENDERER_HOOK", "DirectX 11 hook succeeded");
             m_valid = true;
             m_is_d3d11 = true;
             return true;
@@ -340,6 +375,7 @@ bool Framework::hook_d3d11() {
 
         m_valid = false;
         m_is_d3d11 = false;
+        nrc_debug::log("RENDERER_HOOK", "DirectX 11 hook failed");
         return false;
     }
 
@@ -347,6 +383,7 @@ bool Framework::hook_d3d11() {
 }
 
 bool Framework::hook_d3d12() {
+    nrc_debug::log("RENDERER_HOOK", "Attempting DirectX 12 Present hook");
     // windows 7?
     if (LoadLibraryA("d3d12.dll") == nullptr) {
         spdlog::info("d3d12.dll not found, user is probably running Windows 7.");
@@ -370,6 +407,7 @@ bool Framework::hook_d3d12() {
     if (!m_is_d3d11) {
         if (m_d3d12_hook->hook()) {
             spdlog::info("Hooked DirectX 12");
+            nrc_debug::log("RENDERER_HOOK", "DirectX 12 hook succeeded");
             m_valid = true;
             m_is_d3d12 = true;
             return true;
@@ -383,6 +421,7 @@ bool Framework::hook_d3d12() {
 
         m_valid = false;
         m_is_d3d12 = false;
+        nrc_debug::log("RENDERER_HOOK", "DirectX 12 hook failed; trying DirectX 11");
 
         // Try to hook d3d11 instead
         return hook_d3d11();
