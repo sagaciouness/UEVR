@@ -14,7 +14,7 @@ std::atomic<Language> g_language{Language::ZH_CN};
 
 const std::unordered_map<std::string_view, std::string_view> ZH_CN{
     {"About"sv, "关于"sv},
-    {"UEVR Roco Kingdom MorefunUE4 Compatibility Edition"sv, "UEVR洛克王国 MorefunUE4 兼容版"sv},
+    {"UEVR Roco Kingdom MorefunUE4 Compatibility Edition | Compatibility adaptation & Chinese localization: sicuncat/偏差"sv, "UEVR洛克王国 MorefunUE4 兼容版 | 兼容适配与中文维护：sicuncat/偏差"sv},
     {"FrameworkConfig"sv, "框架设置"sv},
     {"Main"sv, "主要设置"sv},
     {"GUI/Themes"sv, "界面/主题"sv},
@@ -49,7 +49,9 @@ const std::unordered_map<std::string_view, std::string_view> ZH_CN{
     {"Framework is currently initializing..."sv, "框架正在初始化……"sv},
     {"This menu will close after initialization if you have the remember option enabled."sv, "如果启用了记忆菜单状态，初始化完成后此菜单将自动关闭。"sv},
     {"Framework error: %s"sv, "框架错误：%s"sv},
-    {"Author: praydog"sv, "作者：praydog"sv},
+    {"UEVR original author: praydog"sv, "UEVR 原作者：praydog"sv},
+    {"Compatibility adaptation and Chinese localization: sicuncat/偏差"sv, "兼容适配与中文维护：sicuncat/偏差"sv},
+    {"Unofficial community compatibility project; not affiliated with or endorsed by upstream authors or game rights holders."sv, "非官方社区兼容项目，与上游作者及游戏权利方无隶属或背书关系。"sv},
     {"Unreal Engine VR"sv, "虚幻引擎 VR"sv},
     {"Branch: %s"sv, "分支：%s"sv},
     {"Commits: %i"sv, "提交数：%i"sv},

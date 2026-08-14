@@ -1260,7 +1260,7 @@ void Framework::draw_ui() {
         m_cursor_state_changed = false;
     }
     
-    const auto uevr_name = std::format("{} [{}+{}-{:.8}]###UEVRMainWindow", localization::get("UEVR Roco Kingdom MorefunUE4 Compatibility Edition"),
+    const auto uevr_name = std::format("{} [{}+{}-{:.8}]###UEVRMainWindow", localization::get("UEVR Roco Kingdom MorefunUE4 Compatibility Edition | Compatibility adaptation & Chinese localization: sicuncat/偏差"),
         UEVR_TAG, UEVR_COMMITS_PAST_TAG, UEVR_COMMIT_HASH);
 
     ImGui::SetNextWindowSize(ImVec2(window_w, window_h), ImGuiCond_::ImGuiCond_Once);
@@ -1505,7 +1505,10 @@ void Framework::draw_ui() {
 }
 
 void Framework::draw_about() {
-    ImGui::Text(localization::get("Author: praydog"));
+    ImGui::Text(localization::get("UEVR original author: praydog"));
+    ImGui::Text(localization::get("Compatibility adaptation and Chinese localization: sicuncat/偏差"));
+    ImGui::TextWrapped(localization::get("Unofficial community compatibility project; not affiliated with or endorsed by upstream authors or game rights holders."));
+    ImGui::Separator();
     ImGui::Text(localization::get("Unreal Engine VR"));
     ImGui::Text(localization::get("https://github.com/praydog/UEVR"));
     ImGui::Text(localization::get("http://praydog.com"));
