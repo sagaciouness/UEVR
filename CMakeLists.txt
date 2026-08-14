@@ -722,6 +722,7 @@ set(uevr_SOURCES "")
 list(APPEND uevr_SOURCES
 	"src/ExceptionHandler.cpp"
 	"src/Framework.cpp"
+	"src/Localization.cpp"
 	"src/Main.cpp"
 	"src/Mod.cpp"
 	"src/Mods.cpp"
@@ -766,6 +767,7 @@ list(APPEND uevr_SOURCES
 	"src/ExceptionHandler.hpp"
 	"src/Framework.hpp"
 	"src/LicenseStrings.hpp"
+	"src/Localization.hpp"
 	"src/Mod.hpp"
 	"src/Mods.hpp"
 	"src/WindowFilter.hpp"
@@ -805,6 +807,7 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/runtimes/VRRuntime.hpp"
 	"src/mods/vr/shaders/ps.hpp"
 	"src/mods/vr/shaders/vs.hpp"
+	"src/uevr-imgui/font_notosanssc.hpp"
 	"src/uevr-imgui/font_robotomedium.hpp"
 	"src/uevr-imgui/uevr_imconfig.hpp"
 	"src/utility/ImGui.hpp"
@@ -836,6 +839,7 @@ target_compile_options(uevr PUBLIC
 	"/bigobj"
 	"/EHa"
 	"/MP"
+	"/utf-8"
 )
 
 target_include_directories(uevr PUBLIC

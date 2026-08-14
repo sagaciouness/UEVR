@@ -1,3 +1,5 @@
+#include "Localization.hpp"
+
 #include <chrono>
 #include <filesystem>
 
@@ -7,6 +9,7 @@
 #include <spdlog/sinks/basic_file_sink.h>
 
 #include <imgui.h>
+#include "uevr-imgui/font_notosanssc.hpp"
 #include "uevr-imgui/font_robotomedium.hpp"
 #include "uevr-imgui/imgui_impl_dx11.h"
 #include "uevr-imgui/imgui_impl_dx12.h"
@@ -1132,6 +1135,22 @@ void Framework::update_fonts() {
     fonts->Clear();
     fonts->AddFontFromMemoryCompressedTTF(RobotoMedium_compressed_data, RobotoMedium_compressed_size, (float)m_font_size);
 
+    ImFontGlyphRangesBuilder zh_cn_builder{};
+    zh_cn_builder.AddText(localization::get_zh_cn_glyph_text());
+    ImVector<ImWchar> zh_cn_ranges{};
+    zh_cn_builder.BuildRanges(&zh_cn_ranges);
+
+    ImFontConfig zh_cn_config{};
+    zh_cn_config.MergeMode = true;
+    zh_cn_config.PixelSnapH = true;
+    fonts->AddFontFromMemoryCompressedTTF(
+        NotoSansSC_compressed_data,
+        NotoSansSC_compressed_size,
+        (float)m_font_size,
+        &zh_cn_config,
+        zh_cn_ranges.Data
+    );
+
     for (auto& font : m_additional_fonts) {
         const ImWchar* ranges = nullptr;
 
@@ -1250,29 +1269,29 @@ void Framework::draw_ui() {
     ImGui::Columns(2);
     ImGui::BeginGroup();
 
-    ImGui::Checkbox("Transparency", &m_ui_option_transparent);
+    ImGui::Checkbox(localization::get("Transparency"), &m_ui_option_transparent);
     ImGui::SameLine();
-    ImGui::Text("(?)");
+    ImGui::Text(localization::get("(?)"));
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Makes the UI transparent when not focused.");
+        ImGui::SetTooltip(localization::get("Makes the UI transparent when not focused."));
     }
-    ImGui::Checkbox("Input Passthrough", &m_ui_passthrough);
+    ImGui::Checkbox(localization::get("Input Passthrough"), &m_ui_passthrough);
     ImGui::SameLine();
-    ImGui::Text("(?)");
+    ImGui::Text(localization::get("(?)"));
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Allows mouse and keyboard inputs to register to the game while the UI is focused.");
+        ImGui::SetTooltip(localization::get("Allows mouse and keyboard inputs to register to the game while the UI is focused."));
     }
 
     FrameworkConfig::get()->get_advanced_mode()->draw("Show Advanced Options");
 
     ImGui::SameLine();
-    ImGui::Text("(?)");
+    ImGui::Text(localization::get("(?)"));
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Show additional options for greater control over various settings.");
+        ImGui::SetTooltip(localization::get("Show additional options for greater control over various settings."));
     }
 
     if (m_mods_fully_initialized) {
-        if (ImGui::Button("Reset to Default Settings")) {
+        if (ImGui::Button(localization::get("Reset to Default Settings"))) {
             reset_config();
         }
     }
@@ -1281,10 +1300,10 @@ void Framework::draw_ui() {
     ImGui::NextColumn();
 
     ImGui::BeginGroup();
-    ImGui::Text("Keyboard Menu Key: Insert");
-    ImGui::Text("Gamepad L3 + R3: Toggle Menu");
-    ImGui::Text("Gamepad RT: Shortcuts");
-    ImGui::Text("Gamepad LB/RB: Change Sidebar Page");
+    ImGui::Text(localization::get("Keyboard Menu Key: Insert"));
+    ImGui::Text(localization::get("Gamepad L3 + R3: Toggle Menu"));
+    ImGui::Text(localization::get("Gamepad RT: Shortcuts"));
+    ImGui::Text(localization::get("Gamepad LB/RB: Change Sidebar Page"));
 
     ImGui::EndGroup();
     ImGui::EndGroup();
@@ -1297,8 +1316,8 @@ void Framework::draw_ui() {
     sidebar_entries.emplace_back("About", false);
 
     if (ImGui::BeginTable("UEVRTable", 2, ImGuiTableFlags_::ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_::ImGuiTableFlags_BordersOuterV | ImGuiTableFlags_::ImGuiTableFlags_SizingFixedFit)) {
-        ImGui::TableSetupColumn("UEVRLeftPaneColumn", ImGuiTableColumnFlags_WidthFixed, 150.0f);
-        ImGui::TableSetupColumn("UEVRRightPaneColumn", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn(localization::get("UEVRLeftPaneColumn"), ImGuiTableColumnFlags_WidthFixed, 150.0f);
+        ImGui::TableSetupColumn(localization::get("UEVRRightPaneColumn"), ImGuiTableColumnFlags_WidthStretch);
 
         ImGui::TableNextRow();
         ImGui::TableSetColumnIndex(0); // Set to the first column
@@ -1306,7 +1325,7 @@ void Framework::draw_ui() {
         ImGui::BeginChild("UEVRLeftPane", ImVec2(0, 0), true);
         auto dcs = [&](const char* label, int32_t page_value) -> bool {
             ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.5f, 0.5f));
-            if (ImGui::Selectable(label, m_sidebar_state.selected_entry == page_value)) {
+            if (ImGui::Selectable(localization::get(label), m_sidebar_state.selected_entry == page_value)) {
                 m_sidebar_state.selected_entry = page_value;
                 ImGui::PopStyleVar();
                 return true;
@@ -1369,7 +1388,7 @@ void Framework::draw_ui() {
                                 }
                             }
 
-                            ImGui::Text(range.mod->get_name().data());
+                            ImGui::Text("%s", localization::get(range.mod->get_name().data()));
                         }
                     }
 
@@ -1446,8 +1465,8 @@ void Framework::draw_ui() {
                 draw_about();
             }
 
-            ImGui::TextWrapped("Framework is currently initializing...");
-            ImGui::TextWrapped("This menu will close after initialization if you have the remember option enabled.");
+            ImGui::TextWrapped(localization::get("Framework is currently initializing..."));
+            ImGui::TextWrapped(localization::get("This menu will close after initialization if you have the remember option enabled."));
         } else if (!m_error.empty()) {
             ImGui::EndChild();
 
@@ -1456,7 +1475,7 @@ void Framework::draw_ui() {
                 draw_about();
             }
 
-            ImGui::TextWrapped("Framework error: %s", m_error.c_str());
+            ImGui::TextWrapped(localization::get("Framework error: %s"), m_error.c_str());
         }
 
         ImGui::EndTable();
@@ -1485,19 +1504,19 @@ void Framework::draw_ui() {
 }
 
 void Framework::draw_about() {
-    ImGui::Text("Author: praydog");
-    ImGui::Text("Unreal Engine VR");
-    ImGui::Text("https://github.com/praydog/UEVR");
-    ImGui::Text("http://praydog.com");
-    ImGui::Text("Branch: %s", UEVR_BRANCH);
-    ImGui::Text("Commits: %i", UEVR_TOTAL_COMMITS);
-    ImGui::Text("Commit hash: %s", std::format("{:.8}", UEVR_COMMIT_HASH).c_str());
-    ImGui::Text("Tag: %s", UEVR_TAG);
-    ImGui::Text("Commits past tag: %i", UEVR_COMMITS_PAST_TAG);
-    ImGui::Text("Build date: %s", UEVR_BUILD_DATE);
-    ImGui::Text("Build time: %s", UEVR_BUILD_TIME);
+    ImGui::Text(localization::get("Author: praydog"));
+    ImGui::Text(localization::get("Unreal Engine VR"));
+    ImGui::Text(localization::get("https://github.com/praydog/UEVR"));
+    ImGui::Text(localization::get("http://praydog.com"));
+    ImGui::Text(localization::get("Branch: %s"), UEVR_BRANCH);
+    ImGui::Text(localization::get("Commits: %i"), UEVR_TOTAL_COMMITS);
+    ImGui::Text(localization::get("Commit hash: %s"), std::format("{:.8}", UEVR_COMMIT_HASH).c_str());
+    ImGui::Text(localization::get("Tag: %s"), UEVR_TAG);
+    ImGui::Text(localization::get("Commits past tag: %i"), UEVR_COMMITS_PAST_TAG);
+    ImGui::Text(localization::get("Build date: %s"), UEVR_BUILD_DATE);
+    ImGui::Text(localization::get("Build time: %s"), UEVR_BUILD_TIME);
 
-    if (ImGui::CollapsingHeader("Licenses")) {
+    if (ImGui::CollapsingHeader(localization::get("Licenses"))) {
         ImGui::TreePush("Licenses");
 
         struct License {

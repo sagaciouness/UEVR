@@ -237,7 +237,7 @@ include-directories = [
     "include/", 
     "${OPENXR_SOURCE_DIR}/src"
 ]
-compile-options = ["/GS-", "/bigobj", "/EHa", "/MP"]
+compile-options = ["/GS-", "/bigobj", "/EHa", "/MP", "/utf-8"]
 compile-features = ["cxx_std_23"]
 compile-definitions = []
 link-libraries = [

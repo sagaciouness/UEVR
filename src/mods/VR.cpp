@@ -1,3 +1,5 @@
+#include "Localization.hpp"
+
 #define NOMINMAX
 
 #include <fstream>
@@ -2007,7 +2009,7 @@ void VR::on_frame() {
 
         ImGui::Begin("AimMethod Notification", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav);
 
-        ImGui::Text("Continue holding down L3 + R3 to toggle aim method");
+        ImGui::Text(localization::get("Continue holding down L3 + R3 to toggle aim method"));
 
         if (std::chrono::steady_clock::now() - m_xinput_context.headlocked_begin >= std::chrono::seconds(1)) {
             if (m_aim_method->value() == VR::AimMethod::GAME) {
@@ -2040,30 +2042,30 @@ void VR::on_frame() {
         ImGui::Begin("RT Modifier Controls", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav);
         
         ImGui::Separator();
-        ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "RT + Left Stick: Camera left/right/forward/back");
-        ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "RT + Right Stick: Camera up/down");
+        ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%s", localization::get("RT + Left Stick: Camera left/right/forward/back"));
+        ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%s", localization::get("RT + Right Stick: Camera up/down"));
         
-        ImGui::Text("Page: %d", m_rt_modifier.page + 1);
-        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "DPad Left: Previous page | DPad Right: Next page");
+        ImGui::Text(localization::get("Page: %d"), m_rt_modifier.page + 1);
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "%s", localization::get("DPad Left: Previous page | DPad Right: Next page"));
 
         switch (m_rt_modifier.page) {
         case 2:
-            ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "RT + B: Save Camera 2");
-            ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "RT + Y: Save Camera 1");
-            ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "RT + X: Save Camera 0");
+            ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%s", localization::get("RT + B: Save Camera 2"));
+            ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%s", localization::get("RT + Y: Save Camera 1"));
+            ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%s", localization::get("RT + X: Save Camera 0"));
             break;
 
         case 1:
-            ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "RT + B: Load Camera 2");
-            ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "RT + Y: Load Camera 1");
-            ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "RT + X: Load Camera 0");
+            ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%s", localization::get("RT + B: Load Camera 2"));
+            ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%s", localization::get("RT + Y: Load Camera 1"));
+            ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%s", localization::get("RT + X: Load Camera 0"));
             break;
 
         case 0:
         default:
-            ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "RT + B: Reset camera offset");
-            ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "RT + Y: Recenter view");
-            ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "RT + X: Reset standing origin");
+            ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%s", localization::get("RT + B: Reset camera offset"));
+            ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%s", localization::get("RT + Y: Recenter view"));
+            ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%s", localization::get("RT + X: Reset standing origin"));
             m_rt_modifier.page = 0;
             break;
         }
@@ -2332,8 +2334,8 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
     SelectedPage selected_page = PAGE_RUNTIME;
 
     /*ImGui::BeginTable("VRTable", 2, ImGuiTableFlags_::ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_::ImGuiTableFlags_BordersOuterV | ImGuiTableFlags_::ImGuiTableFlags_SizingFixedFit);
-    ImGui::TableSetupColumn("LeftPane", ImGuiTableColumnFlags_WidthFixed, 150.0f);
-    ImGui::TableSetupColumn("RightPane", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn(localization::get("LeftPane"), ImGuiTableColumnFlags_WidthFixed, 150.0f);
+    ImGui::TableSetupColumn(localization::get("RightPane"), ImGuiTableColumnFlags_WidthStretch);
 
     // Draw left pane
     {
@@ -2394,36 +2396,36 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         selected_page = PAGE_DEBUG;
         break;
     default:
-        ImGui::Text("Unknown page selected");
+        ImGui::Text(localization::get("Unknown page selected"));
         break;
     }
 
     if (selected_page == PAGE_RUNTIME) {
         if (m_has_hw_scheduling) {
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.0f, 0.0f, 1.0f));
-            ImGui::TextWrapped("WARNING: Hardware-accelerated GPU scheduling is enabled. This may cause the game to run slower.");
-            ImGui::TextWrapped("Go into your Windows Graphics settings and disable \"Hardware-accelerated GPU scheduling\"");
+            ImGui::TextWrapped(localization::get("WARNING: Hardware-accelerated GPU scheduling is enabled. This may cause the game to run slower."));
+            ImGui::TextWrapped(localization::get("Go into your Windows Graphics settings and disable \"Hardware-accelerated GPU scheduling\""));
             ImGui::PopStyleColor();
-            ImGui::TextWrapped("Note: This is only necessary if you are experiencing performance issues.");
+            ImGui::TextWrapped(localization::get("Note: This is only necessary if you are experiencing performance issues."));
         }
 
         if (GetModuleHandleW(L"nvngx_dlssg.dll") != nullptr) {
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.0f, 0.0f, 1.0f));
-            ImGui::TextWrapped("WARNING: DLSS Frame Generation has been detected. Make sure it is disabled within in-game settings.");
+            ImGui::TextWrapped(localization::get("WARNING: DLSS Frame Generation has been detected. Make sure it is disabled within in-game settings."));
             ImGui::PopStyleColor();
         }
 
-        ImGui::Text((std::string{"Runtime Information ("} + get_runtime()->name().data() + ")").c_str());
+        ImGui::Text(localization::get("Runtime Information (%s)"), get_runtime()->name().data());
 
         m_desktop_fix->draw("Desktop Spectator View");
         ImGui::SameLine();
         m_2d_screen_mode->draw("2D Screen Mode");
 
-        ImGui::TextWrapped("Render Resolution (per-eye): %d x %d", get_runtime()->get_width(), get_runtime()->get_height());
-        ImGui::TextWrapped("Total Render Resolution: %d x %d", get_runtime()->get_width() * 2, get_runtime()->get_height());
+        ImGui::TextWrapped(localization::get("Render Resolution (per-eye): %d x %d"), get_runtime()->get_width(), get_runtime()->get_height());
+        ImGui::TextWrapped(localization::get("Total Render Resolution: %d x %d"), get_runtime()->get_width() * 2, get_runtime()->get_height());
 
         if (get_runtime()->is_openvr()) {
-            ImGui::TextWrapped("Resolution can be changed in SteamVR");
+            ImGui::TextWrapped(localization::get("Resolution can be changed in SteamVR"));
         }
 
         get_runtime()->on_draw_ui();
@@ -2451,14 +2453,14 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         m_ghosting_fix->draw("Ghosting Fix");
 
         ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
-        if (ImGui::TreeNode("Native Stereo Fix")) {
+        if (ImGui::TreeNode(localization::get("Native Stereo Fix"))) {
             m_native_stereo_fix->draw("Enabled");
             m_native_stereo_fix_same_pass->draw("Use Same Stereo Pass");
             ImGui::TreePop();
         }
 
         ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
-        if (ImGui::TreeNode("Near Clip Plane")) {
+        if (ImGui::TreeNode(localization::get("Near Clip Plane"))) {
             m_custom_z_near_enabled->draw("Enable");
 
             if (m_custom_z_near_enabled->value()) {
@@ -2475,7 +2477,7 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
 
     if (selected_page == PAGE_INPUT) {
         ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
-        if (ImGui::TreeNode("Controller")) {
+        if (ImGui::TreeNode(localization::get("Controller"))) {
             m_joystick_deadzone->draw("VR Joystick Deadzone");
             m_controller_pitch_offset->draw("Controller Pitch Offset");
 
@@ -2488,8 +2490,8 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         }
 
         ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
-        if (ImGui::TreeNode("Aim Method")) {
-            ImGui::TextWrapped("Some games may not work with this enabled.");
+        if (ImGui::TreeNode(localization::get("Aim Method"))) {
+            ImGui::TextWrapped(localization::get("Some games may not work with this enabled."));
             if (m_aim_method->draw("Type")) {
                 m_previous_aim_method = (AimMethod)m_aim_method->value();
             }
@@ -2507,7 +2509,7 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         }
 
         ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
-        if (ImGui::TreeNode("Snap Turn")) {
+        if (ImGui::TreeNode(localization::get("Snap Turn"))) {
             m_snapturn->draw("Enabled");
             m_snapturn_angle->draw("Angle");
             m_snapturn_joystick_deadzone->draw("Deadzone");
@@ -2516,25 +2518,25 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         }
 
         ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
-        if (ImGui::TreeNode("Movement Orientation")) {
+        if (ImGui::TreeNode(localization::get("Movement Orientation"))) {
             m_movement_orientation->draw("Type");
 
             ImGui::TreePop();
         }
 
         ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
-        if (ImGui::TreeNode("Roomscale Movement")) {
+        if (ImGui::TreeNode(localization::get("Roomscale Movement"))) {
             m_roomscale_movement->draw("Enabled");
 
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("When enabled, headset movement will affect the movement of the player character.");
+                ImGui::SetTooltip(localization::get("When enabled, headset movement will affect the movement of the player character."));
             }
 
             ImGui::SameLine();
             m_roomscale_sweep->draw("Sweep Movement");
             // Draw description of option
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("When enabled, roomscale movement will use a sweep to prevent the player from moving through walls.\nThis also allows physics objects to interact with the player, like doors.");
+                ImGui::SetTooltip(localization::get("When enabled, roomscale movement will use a sweep to prevent the player from moving through walls.\nThis also allows physics objects to interact with the player, like doors."));
             }
 
             ImGui::TreePop();
@@ -2543,9 +2545,9 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
 
     if (selected_page == PAGE_CAMERA) {
         ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
-        if (ImGui::TreeNode("Camera Freeze")) {
+        if (ImGui::TreeNode(localization::get("Camera Freeze"))) {
             float camera_offset[] = {m_camera_forward_offset->value(), m_camera_right_offset->value(), m_camera_up_offset->value()};
-            if (ImGui::SliderFloat3("Camera Offset", camera_offset, -4000.0f, 4000.0f)) {
+            if (ImGui::SliderFloat3(localization::get("Camera Offset"), camera_offset, -4000.0f, 4000.0f)) {
                 m_camera_forward_offset->value() = camera_offset[0];
                 m_camera_right_offset->value() = camera_offset[1];
                 m_camera_up_offset->value() = camera_offset[2];
@@ -2554,19 +2556,19 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             for (auto i = 0; i < m_camera_datas.size(); ++i) {
                 auto& data = m_camera_datas[i];
 
-                if (ImGui::Button(std::format("Save Camera {}", i).data())) {
+                if (const auto label = std::format("{} {}", localization::get("Save Camera"), i); ImGui::Button(label.data())) {
                     save_camera(i);
                 }
 
                 ImGui::SameLine();
 
-                if (ImGui::Button(std::format("Load Camera {}", i).data())) {
+                if (const auto label = std::format("{} {}", localization::get("Load Camera"), i); ImGui::Button(label.data())) {
                     load_camera(i);
                 }
             }
 
             bool pos_freeze = m_camera_freeze.position_frozen || m_camera_freeze.position_wants_freeze;
-            if (ImGui::Checkbox("Freeze Position", &pos_freeze)) {
+            if (ImGui::Checkbox(localization::get("Freeze Position"), &pos_freeze)) {
                 if (pos_freeze) {
                     m_camera_freeze.position_wants_freeze = true;
                 } else {
@@ -2576,7 +2578,7 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
 
             ImGui::SameLine();
             bool rot_freeze = m_camera_freeze.rotation_frozen || m_camera_freeze.rotation_wants_freeze;
-            if (ImGui::Checkbox("Freeze Rotation", &rot_freeze)) {
+            if (ImGui::Checkbox(localization::get("Freeze Rotation"), &rot_freeze)) {
                 if (rot_freeze) {
                     m_camera_freeze.rotation_wants_freeze = true;
                 } else {
@@ -2588,7 +2590,7 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         }
 
         ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
-        if (ImGui::TreeNode("Camera Lerp")) {
+        if (ImGui::TreeNode(localization::get("Camera Lerp"))) {
             m_lerp_camera_pitch->draw("Lerp Pitch");
             ImGui::SameLine();
             m_lerp_camera_yaw->draw("Lerp Yaw");
@@ -2600,7 +2602,7 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         }
 
         ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
-        if (ImGui::TreeNode("Decoupled Pitch")) {
+        if (ImGui::TreeNode(localization::get("Decoupled Pitch"))) {
             m_decoupled_pitch->draw("Enabled");
             m_decoupled_pitch_ui_adjust->draw("Auto Adjust UI");
 
@@ -2610,7 +2612,7 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
 
     if (selected_page == PAGE_KEYBINDS) {
         ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
-        if (ImGui::TreeNode("Playspace Keys")) {
+        if (ImGui::TreeNode(localization::get("Playspace Keys"))) {
             m_keybind_recenter->draw("Recenter View Key");
             m_keybind_recenter_horizon->draw("Recenter Horizon Key");
             m_keybind_set_standing_origin->draw("Set Standing Origin Key");
@@ -2619,7 +2621,7 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         }
 
         ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
-        if (ImGui::TreeNode("Camera Keys")) {
+        if (ImGui::TreeNode(localization::get("Camera Keys"))) {
             m_keybind_load_camera_0->draw("Load Camera 0 Key");
             m_keybind_load_camera_1->draw("Load Camera 1 Key");
             m_keybind_load_camera_2->draw("Load Camera 2 Key");
@@ -2628,7 +2630,7 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         }
 
         ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
-        if (ImGui::TreeNode("Overlay/Runtime Keys")) {
+        if (ImGui::TreeNode(localization::get("Overlay/Runtime Keys"))) {
             m_keybind_toggle_2d_screen->draw("Toggle 2D Screen Mode Key");
             m_keybind_toggle_gui->draw("Toggle In-Game UI Key");
             m_keybind_disable_vr->draw("Disable VR Key");
@@ -2643,7 +2645,7 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
 
     if (selected_page == PAGE_COMPATIBILITY) {
         ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
-        if (ImGui::TreeNode("Compatibility Options")) {
+        if (ImGui::TreeNode(localization::get("Compatibility Options"))) {
             m_compatibility_ahud->draw("AHUD UI Compatibility");
             m_compatibility_skip_uobjectarray_init->draw("Skip UObjectArray Init");
             m_compatibility_skip_pip->draw("Skip PostInitProperties");
@@ -2662,7 +2664,7 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         }
 
         ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
-        if (ImGui::TreeNode("Splitscreen Compatibility")) {
+        if (ImGui::TreeNode(localization::get("Splitscreen Compatibility"))) {
             m_splitscreen_compatibility_mode->draw("Enabled");
             m_splitscreen_view_index->draw("Index");
             ImGui::TreePop();
@@ -2674,36 +2676,36 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             m_fake_stereo_hook->on_draw_ui();
         }
 
-        //ImGui::Combo("Sync Mode", (int*)&get_runtime()->custom_stage, "Early\0Late\0Very Late\0");
+        //ImGui::Combo(localization::get("Sync Mode"), (int*)&get_runtime()->custom_stage, "Early\0Late\0Very Late\0");
         m_sync_mode->draw("Sync Mode");
-        ImGui::DragFloat4("Right Bounds", (float*)&m_right_bounds, 0.005f, -2.0f, 2.0f);
-        ImGui::DragFloat4("Left Bounds", (float*)&m_left_bounds, 0.005f, -2.0f, 2.0f);
-        ImGui::Checkbox("Disable Projection Matrix Override", &m_disable_projection_matrix_override);
-        ImGui::Checkbox("Disable View Matrix Override", &m_disable_view_matrix_override);
-        ImGui::Checkbox("Disable Backbuffer Size Override", &m_disable_backbuffer_size_override);
-        ImGui::Checkbox("Disable VR Overlay", &m_disable_overlay);
-        ImGui::Checkbox("Disable VR Entirely", &m_disable_vr);
-        ImGui::Checkbox("Stereo Emulation Mode", &m_stereo_emulation_mode);
-        ImGui::Checkbox("Wait for Present", &m_wait_for_present);
+        ImGui::DragFloat4(localization::get("Right Bounds"), (float*)&m_right_bounds, 0.005f, -2.0f, 2.0f);
+        ImGui::DragFloat4(localization::get("Left Bounds"), (float*)&m_left_bounds, 0.005f, -2.0f, 2.0f);
+        ImGui::Checkbox(localization::get("Disable Projection Matrix Override"), &m_disable_projection_matrix_override);
+        ImGui::Checkbox(localization::get("Disable View Matrix Override"), &m_disable_view_matrix_override);
+        ImGui::Checkbox(localization::get("Disable Backbuffer Size Override"), &m_disable_backbuffer_size_override);
+        ImGui::Checkbox(localization::get("Disable VR Overlay"), &m_disable_overlay);
+        ImGui::Checkbox(localization::get("Disable VR Entirely"), &m_disable_vr);
+        ImGui::Checkbox(localization::get("Stereo Emulation Mode"), &m_stereo_emulation_mode);
+        ImGui::Checkbox(localization::get("Wait for Present"), &m_wait_for_present);
         m_controllers_allowed->draw("Controllers allowed");
-        ImGui::Checkbox("Controller test mode", &m_controller_test_mode);
+        ImGui::Checkbox(localization::get("Controller test mode"), &m_controller_test_mode);
         m_show_fps->draw("Show FPS");
         m_show_statistics->draw("Show Engine Statistics");
 
         const double min_ = 0.0;
         const double max_ = 25.0;
-        ImGui::SliderScalar("Prediction Scale", ImGuiDataType_Double, &m_openxr->prediction_scale, &min_, &max_);
+        ImGui::SliderScalar(localization::get("Prediction Scale"), ImGuiDataType_Double, &m_openxr->prediction_scale, &min_, &max_);
 
-        ImGui::DragFloat4("Raw Left", (float*)&m_raw_projections[0], 0.01f, -100.0f, 100.0f);
-        ImGui::DragFloat4("Raw Right", (float*)&m_raw_projections[1], 0.01f, -100.0f, 100.0f);
+        ImGui::DragFloat4(localization::get("Raw Left"), (float*)&m_raw_projections[0], 0.01f, -100.0f, 100.0f);
+        ImGui::DragFloat4(localization::get("Raw Right"), (float*)&m_raw_projections[1], 0.01f, -100.0f, 100.0f);
 
         const auto left_stick_axis = get_left_stick_axis();
         const auto right_stick_axis = get_right_stick_axis();
 
-        ImGui::DragFloat2("Left Stick", (float*)&left_stick_axis, 0.01f, -1.0f, 1.0f);
-        ImGui::DragFloat2("Right Stick", (float*)&right_stick_axis, 0.01f, -1.0f, 1.0f);
+        ImGui::DragFloat2(localization::get("Left Stick"), (float*)&left_stick_axis, 0.01f, -1.0f, 1.0f);
+        ImGui::DragFloat2(localization::get("Right Stick"), (float*)&right_stick_axis, 0.01f, -1.0f, 1.0f);
 
-        ImGui::TextWrapped("Hardware scheduling: %s", m_has_hw_scheduling ? "Enabled" : "Disabled");
+        ImGui::TextWrapped(localization::get("Hardware scheduling: %s"), m_has_hw_scheduling ? "Enabled" : "Disabled");
     }
 
     ImGui::EndGroup();
@@ -2725,7 +2727,7 @@ void VR::on_draw_ui() {
             return;
         }*/
 
-        ImGui::TextWrapped("Loading...");
+        ImGui::TextWrapped(localization::get("Loading..."));
     } else {
         /*if (!ImGui::CollapsingHeader(get_name().data())) {
             ImGui::PopID();
@@ -2740,12 +2742,12 @@ void VR::on_draw_ui() {
         }
 
         if (runtime->error && runtime->dll_missing) {
-            ImGui::TextWrapped("%s not loaded: %s not found", runtime->name().data(), dll_name.data());
-            ImGui::TextWrapped("Please select %s from the loader if you want to use %s", runtime->name().data(), runtime->name().data());
+            ImGui::TextWrapped(localization::get("%s not loaded: %s not found"), runtime->name().data(), dll_name.data());
+            ImGui::TextWrapped(localization::get("Please select %s from the loader if you want to use %s"), runtime->name().data(), runtime->name().data());
         } else if (runtime->error) {
-            ImGui::TextWrapped("%s not loaded: %s", runtime->name().data(), runtime->error->c_str());
+            ImGui::TextWrapped(localization::get("%s not loaded: %s"), runtime->name().data(), runtime->error->c_str());
         } else {
-            ImGui::TextWrapped("%s not loaded: Unknown error", runtime->name().data());
+            ImGui::TextWrapped(localization::get("%s not loaded: Unknown error"), runtime->name().data());
         }
 
         ImGui::Separator();
@@ -2757,38 +2759,38 @@ void VR::on_draw_ui() {
     }
 
     if (!get_runtime()->loaded) {
-        ImGui::TextWrapped("No runtime loaded.");
+        ImGui::TextWrapped(localization::get("No runtime loaded."));
 
-        if (ImGui::Button("Attempt to reinitialize")) {
+        if (ImGui::Button(localization::get("Attempt to reinitialize"))) {
             clean_initialize();
         }
 
         return;
     }
 
-    if (ImGui::Button("Set Standing Height")) {
+    if (ImGui::Button(localization::get("Set Standing Height"))) {
         m_standing_origin.y = get_position(0).y;
     }
 
     ImGui::SameLine();
 
-    if (ImGui::Button("Set Standing Origin")) {
+    if (ImGui::Button(localization::get("Set Standing Origin"))) {
         m_standing_origin = get_position(0);
     }
 
     ImGui::SameLine();
 
-    if (ImGui::Button("Recenter View")) {
+    if (ImGui::Button(localization::get("Recenter View"))) {
         recenter_view();
     }
 
     ImGui::SameLine();
 
-    if (ImGui::Button("Recenter Horizon")) {
+    if (ImGui::Button(localization::get("Recenter Horizon"))) {
         recenter_horizon();
     }
 
-    if (ImGui::Button("Reinitialize Runtime")) {
+    if (ImGui::Button(localization::get("Reinitialize Runtime"))) {
         get_runtime()->wants_reinitialize = true;
     }
 }

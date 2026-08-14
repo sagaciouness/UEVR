@@ -1,3 +1,5 @@
+#include "Localization.hpp"
+
 #define NOMINMAX
 
 #include <windows.h>
@@ -394,7 +396,7 @@ void FFakeStereoRenderingHook::on_draw_ui() {
     ZoneScopedN(__FUNCTION__);
 
     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-    if (ImGui::TreeNode("Stereo Hook Options")) {
+    if (ImGui::TreeNode(localization::get("Stereo Hook Options"))) {
         m_asynchronous_scan->draw("Asynchronous Code Scanning");
         m_recreate_textures_on_reset->draw("Recreate Textures on Reset");
         m_frame_delay_compensation->draw("Frame Delay Compensation");
@@ -405,22 +407,22 @@ void FFakeStereoRenderingHook::on_draw_ui() {
         }
 
 #if 0
-        if (ImGui::Button("Spawn scene capture")) {
+        if (ImGui::Button(localization::get("Spawn scene capture"))) {
             get_render_target_manager()->create_scene_capture();
         }
 
         ImGui::SameLine();
-        if (ImGui::Button("Destroy scene capture")) {
+        if (ImGui::Button(localization::get("Destroy scene capture"))) {
             get_render_target_manager()->destroy_scene_capture();
         }
 
         ImGui::SameLine();
-        if (ImGui::Button("Create texture")) {
+        if (ImGui::Button(localization::get("Create texture"))) {
             get_render_target_manager()->create_scene_capture_texture();
         }
 
         ImGui::SameLine();
-        if (ImGui::Button("Destroy texture")) {
+        if (ImGui::Button(localization::get("Destroy texture"))) {
             get_render_target_manager()->destroy_scene_capture();
         }
 
@@ -431,7 +433,7 @@ void FFakeStereoRenderingHook::on_draw_ui() {
                 status = true;
             }
         }
-        ImGui::Text("Scene Capture Texture: %s", status ? "Exists" : "Does not exist");
+        ImGui::Text(localization::get("Scene Capture Texture: %s"), status ? "Exists" : "Does not exist");
 #endif
 
         auto& data = m_viewport_rt_hook_data;
@@ -450,7 +452,7 @@ void FFakeStereoRenderingHook::on_draw_ui() {
         }
 
         if (!items.empty()) {
-            if (ImGui::BeginCombo("GetRenderTargetTexture Retaddrs", items[data.selected_retaddr].c_str())) {
+            if (ImGui::BeginCombo(localization::get("GetRenderTargetTexture Retaddrs"), items[data.selected_retaddr].c_str())) {
                 for (int n = 0; n < items.size(); n++) {
                     ImGui::PushID(n);
                     auto retaddr = retaddrs[n];
@@ -466,24 +468,24 @@ void FFakeStereoRenderingHook::on_draw_ui() {
                     }
 
                     ImGui::SameLine();
-                    if (ImGui::Button("Call Original")) {
+                    if (ImGui::Button(localization::get("Call Original"))) {
                         data.call_original_retaddrs.insert(retaddr);
                         data.redirected_retaddrs.erase(retaddr);
                     }
 
                     ImGui::SameLine();
-                    if (ImGui::Button("Redirect")) {
+                    if (ImGui::Button(localization::get("Redirect"))) {
                         data.redirected_retaddrs.insert(retaddr);
                         data.call_original_retaddrs.erase(retaddr);
                     }
 
                     ImGui::SameLine();
                     if (data.call_original_retaddrs.contains(retaddr)) {
-                        ImGui::Text("[Calling Original]");
+                        ImGui::Text(localization::get("[Calling Original]"));
                     } else if (data.redirected_retaddrs.contains(retaddr)) {
-                        ImGui::Text("[Redirected]");
+                        ImGui::Text(localization::get("[Redirected]"));
                     } else {
-                        ImGui::Text("[Default]");
+                        ImGui::Text(localization::get("[Default]"));
                     }
 
                     ImGui::PopID();

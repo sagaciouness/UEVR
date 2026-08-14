@@ -18,6 +18,7 @@ public:
             *m_enable_l3_r3_toggle,
             *m_l3_r3_long_press,
             *m_advanced_mode,
+            *m_language,
             *m_imgui_theme,
             *m_log_level,
             *m_always_show_cursor,
@@ -105,6 +106,11 @@ private:
         "High Contrast",
     };
 
+    static const inline std::vector<std::string> s_languages {
+        "简体中文",
+        "English",
+    };
+
     static inline std::vector<std::string> s_get_log_levels() {
         std::vector<std::string> log_levels{};
         for (auto& level : SPDLOG_LEVEL_NAMES) {
@@ -121,7 +127,8 @@ private:
     ModToggle::Ptr m_l3_r3_long_press{ ModToggle::create(generate_name("L3R3LongPress"), false) };
     ModToggle::Ptr m_always_show_cursor{ ModToggle::create(generate_name("AlwaysShowCursor"), false) };
     ModToggle::Ptr m_advanced_mode{ ModToggle::create(generate_name("AdvancedMode"), false) };
-    
+
+    ModCombo::Ptr m_language{ ModCombo::create(generate_name("Language"), s_languages, static_cast<int32_t>(localization::Language::ZH_CN)) };
     ModCombo::Ptr m_imgui_theme{ ModCombo::create(generate_name("ImGuiTheme"), s_imgui_themes, Framework::ImGuiThemes::DEFAULT_DARK) };
     ModCombo::Ptr m_log_level{ ModCombo::create(generate_name("LogLevel"), s_get_log_levels(), spdlog::level::info) };
     

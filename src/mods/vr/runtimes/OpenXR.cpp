@@ -1,3 +1,5 @@
+#include "Localization.hpp"
+
 #include <Windows.h>
 #include <TlHelp32.h>
 #include <chrono>
@@ -23,17 +25,17 @@ using namespace nlohmann;
 namespace runtimes {
 void OpenXR::on_draw_ui() {
     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-    if (ImGui::TreeNode("OpenXR Options")) {
+    if (ImGui::TreeNode(localization::get("OpenXR Options"))) {
         this->resolution_scale->draw("Resolution Scale");
         //this->push_dummy_projection->draw("Virtual Desktop Fix");
 
-        ImGui::Checkbox("Virtual Desktop Fix", &this->push_dummy_projection);
+        ImGui::Checkbox(localization::get("Virtual Desktop Fix"), &this->push_dummy_projection);
 
         ImGui::SameLine();
 
         this->ignore_vd_checks->draw("Ignore Virtual Desktop Checks");
 
-        if (ImGui::TreeNode("Bindings")) {
+        if (ImGui::TreeNode(localization::get("Bindings"))) {
             display_bindings_editor();
             ImGui::TreePop();
         }
@@ -1389,9 +1391,9 @@ void OpenXR::trigger_haptic_vibration(float duration, float frequency, float amp
 
 void OpenXR::display_bindings_editor() {
     const auto current_interaction_profile = this->get_current_interaction_profile();
-    ImGui::Text("Interaction Profile: %s", current_interaction_profile.c_str());
+    ImGui::Text(localization::get("Interaction Profile: %s"), current_interaction_profile.c_str());
 
-    if (ImGui::Button("Restore Default Bindings")) {
+    if (ImGui::Button(localization::get("Restore Default Bindings"))) {
         auto filename = current_interaction_profile + ".json";
         
         // replace the slashes with underscores
@@ -1406,13 +1408,13 @@ void OpenXR::display_bindings_editor() {
         }
     }
 
-    if (ImGui::Button("Save Bindings")) {
+    if (ImGui::Button(localization::get("Save Bindings"))) {
         this->save_bindings();
     }
 
     auto display_hand = [&](const std::string& name, uint32_t index) {
         if (current_interaction_profile.empty() || current_interaction_profile == "XR_NULL_PATH") {
-            ImGui::Text("Interaction profile not loaded, try putting on your headset.");
+            ImGui::Text(localization::get("Interaction profile not loaded, try putting on your headset."));
             return;
         }
 
@@ -1430,7 +1432,7 @@ void OpenXR::display_bindings_editor() {
                     
                     for (const auto& output : it.second) {
                         const auto distance = glm::length(output.value - axis);
-                        ImGui::Text("%s: %.2f", this->action_set.action_names[output.action].data(), distance);
+                        ImGui::Text(localization::get("%s: %.2f"), this->action_set.action_names[output.action].data(), distance);
                     }
                 }
             }
@@ -1471,7 +1473,7 @@ void OpenXR::display_bindings_editor() {
                     }
                 }
 
-                if (ImGui::Button("X")) {
+                if (ImGui::Button(localization::get("X"))) {
                     path_map.erase(it.first);
 
                     this->save_bindings();
@@ -1497,10 +1499,10 @@ void OpenXR::display_bindings_editor() {
 
             // Create a way to add a completely new binding
             // Create a textbox for inputting the path for the new binding
-            ImGui::InputText("New Binding (e.g. /user/hand/left/input/trigger)", hand.ui.new_path_name, XR_MAX_PATH_LENGTH);
-            ImGui::Combo("Action", &hand.ui.action_combo_index, known_actions_cstr.data(), known_actions_cstr.size());
+            ImGui::InputText(localization::get("New Binding (e.g. /user/hand/left/input/trigger)"), hand.ui.new_path_name, XR_MAX_PATH_LENGTH);
+            ImGui::Combo(localization::get("Action"), &hand.ui.action_combo_index, known_actions_cstr.data(), known_actions_cstr.size());
 
-            if (ImGui::Button("Add Binding")) {
+            if (ImGui::Button(localization::get("Add Binding"))) {
                 XrPath p{};
                 if (xrStringToPath(this->instance, hand.ui.new_path_name, &p) != XR_SUCCESS) {
                     spdlog::error("[VR] Failed to convert path: {}", hand.ui.new_path_name);
@@ -1510,7 +1512,7 @@ void OpenXR::display_bindings_editor() {
                 }
             }
 
-            ImGui::Text("Vector2 Associations");
+            ImGui::Text(localization::get("Vector2 Associations"));
             for (auto& it : hand.profiles[current_interaction_profile].vector_activators) {
                 ImGui::PushID(&it.first);
 
@@ -1574,11 +1576,11 @@ void OpenXR::display_bindings_editor() {
                         output.action = this->action_set.action_map[known_actions[output_combo_index]];
                     }
 
-                    ImGui::SliderFloat2("Value", &output.value[0], -1.0f, 1.0f);
+                    ImGui::SliderFloat2(localization::get("Value"), &output.value[0], -1.0f, 1.0f);
                     ImGui::PopID();
                 }
 
-                if (ImGui::Button("Insert New Output")) {
+                if (ImGui::Button(localization::get("Insert New Output"))) {
                     hand.profiles[current_interaction_profile].vector_activators[activator].push_back({});
                 }
 
@@ -1590,12 +1592,12 @@ void OpenXR::display_bindings_editor() {
                 ImGui::PopID();
             }
 
-            ImGui::Combo("New Vector2 Activator", &hand.ui.activator_combo_index, known_actions_cstr.data(), known_actions_cstr.size());
-            ImGui::Combo("New Vector2 Modifier", &hand.ui.modifier_combo_index, known_vector2_actions_cstr.data(), known_vector2_actions_cstr.size());
-            ImGui::Combo("New Vector2 Output", &hand.ui.output_combo_index, known_actions_cstr.data(), known_actions_cstr.size());
-            ImGui::SliderFloat2("New Vector2 Value", &hand.ui.output_vector2[0], -1.0f, 1.0f);
+            ImGui::Combo(localization::get("New Vector2 Activator"), &hand.ui.activator_combo_index, known_actions_cstr.data(), known_actions_cstr.size());
+            ImGui::Combo(localization::get("New Vector2 Modifier"), &hand.ui.modifier_combo_index, known_vector2_actions_cstr.data(), known_vector2_actions_cstr.size());
+            ImGui::Combo(localization::get("New Vector2 Output"), &hand.ui.output_combo_index, known_actions_cstr.data(), known_actions_cstr.size());
+            ImGui::SliderFloat2(localization::get("New Vector2 Value"), &hand.ui.output_vector2[0], -1.0f, 1.0f);
 
-            if (ImGui::Button("Add Vector2 Association")) {
+            if (ImGui::Button(localization::get("Add Vector2 Association"))) {
                 const auto activator = this->action_set.action_map[known_actions[hand.ui.activator_combo_index]];
                 const auto modifier = this->action_set.action_map[known_vector2_actions[hand.ui.modifier_combo_index]];
                 const auto output = this->action_set.action_map[known_actions[hand.ui.output_combo_index]];

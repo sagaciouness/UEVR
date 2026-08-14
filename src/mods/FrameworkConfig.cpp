@@ -29,6 +29,10 @@ void FrameworkConfig::draw_main() {
 }
 
 void FrameworkConfig::draw_themes() {
+    if (m_language->draw("Language")) {
+        localization::set_language(m_language->value());
+    }
+
     get_imgui_theme()->draw("Select GUI Theme");
 
     if (m_font_size->draw("Font Size")) {
@@ -57,6 +61,8 @@ void FrameworkConfig::on_config_load(const utility::Config& cfg, bool set_defaul
     for (IModValue& option : m_options) {
         option.config_load(cfg, set_defaults);
     }
+
+    localization::set_language(m_language->value());
 
     if (m_remember_menu_state->value()) {
         g_framework->set_draw_ui(m_menu_open->value(), false);

@@ -8,6 +8,8 @@
 #include <memory>
 
 #include <imgui.h>
+
+#include "Localization.hpp"
 #include <utility/Config.hpp>
 
 #include <sdk/Math.hpp>
@@ -155,7 +157,7 @@ public:
     }
 
     void reset_to_default_value_logic() {
-        if (ImGui::Button("Reset to default")) {
+        if (ImGui::Button(localization::get("Reset to default"))) {
             m_value = m_default_value;
         }
     }
@@ -186,7 +188,7 @@ public:
         }
         
         ImGui::PushID(this);
-        auto ret = ImGui::Checkbox(name.data(), &m_value);
+        auto ret = ImGui::Checkbox(localization::get(name.data()), &m_value);
         context_menu_logic();
         ImGui::PopID();
 
@@ -198,7 +200,7 @@ public:
             return;
         }
 
-        ImGui::Text("%s: %i", name.data(), m_value);
+        ImGui::Text("%s: %i", localization::get(name.data()), m_value);
     }
 
     bool toggle() {
@@ -223,7 +225,7 @@ public:
         }
 
         ImGui::PushID(this);
-        auto ret = ImGui::InputFloat(name.data(), &m_value);
+        auto ret = ImGui::InputFloat(localization::get(name.data()), &m_value);
         context_menu_logic();
         ImGui::PopID();
 
@@ -235,7 +237,7 @@ public:
             return;
         }
 
-        ImGui::Text("%s: %f", name.data(), m_value);
+        ImGui::Text("%s: %f", localization::get(name.data()), m_value);
     }
 };
 
@@ -260,7 +262,7 @@ public:
 
 
         ImGui::PushID(this);
-        auto ret = ImGui::SliderFloat(name.data(), &m_value, m_range.x, m_range.y);
+        auto ret = ImGui::SliderFloat(localization::get(name.data()), &m_value, m_range.x, m_range.y);
         context_menu_logic();
         ImGui::PopID();
 
@@ -272,7 +274,7 @@ public:
             return;
         }
 
-        ImGui::Text("%s: %f [%f, %f]", name.data(), m_value, m_range.x, m_range.y);
+        ImGui::Text("%s: %f [%f, %f]", localization::get(name.data()), m_value, m_range.x, m_range.y);
     }
 
     auto& range() {
@@ -302,7 +304,7 @@ public:
         }
 
         ImGui::PushID(this);
-        auto ret = ImGui::InputInt(name.data(), &m_value);
+        auto ret = ImGui::InputInt(localization::get(name.data()), &m_value);
         context_menu_logic();
         ImGui::PopID();
 
@@ -314,7 +316,7 @@ public:
             return;
         }
 
-        ImGui::Text("%s: %i", name.data(), m_value);
+        ImGui::Text("%s: %i", localization::get(name.data()), m_value);
     }
 };
 
@@ -338,7 +340,7 @@ public:
         }
 
         ImGui::PushID(this);
-        auto ret = ImGui::SliderInt(name.data(), &m_value, m_int_range.min, m_int_range.max);
+        auto ret = ImGui::SliderInt(localization::get(name.data()), &m_value, m_int_range.min, m_int_range.max);
         context_menu_logic();
         ImGui::PopID();
 
@@ -346,7 +348,7 @@ public:
     }
 
     void draw_value(std::string_view name) override {
-        ImGui::Text("%s: %i [%i, %i]", name.data(), m_value, m_int_range.min, m_int_range.max);
+        ImGui::Text("%s: %i [%i, %i]", localization::get(name.data()), m_value, m_int_range.min, m_int_range.max);
     }
 
     auto& range() {
@@ -385,8 +387,14 @@ public:
         // clamp m_value to valid range
         m_value = std::clamp<int32_t>(m_value, 0, static_cast<int32_t>(m_options.size()) - 1);
 
+        std::vector<const char*> localized_options{};
+        localized_options.reserve(m_options_stdstr.size());
+        for (const auto& option : m_options_stdstr) {
+            localized_options.emplace_back(localization::get(option.c_str()));
+        }
+
         ImGui::PushID(this);
-        auto ret = ImGui::Combo(name.data(), &m_value, m_options.data(), static_cast<int32_t>(m_options.size()));
+        auto ret = ImGui::Combo(localization::get(name.data()), &m_value, localized_options.data(), static_cast<int32_t>(localized_options.size()));
         context_menu_logic();
         ImGui::PopID();
 
@@ -400,7 +408,7 @@ public:
 
         m_value = std::clamp<int32_t>(m_value, 0, static_cast<int32_t>(m_options.size()) - 1);
 
-        ImGui::Text("%s: %s", name.data(), m_options[m_value]);
+        ImGui::Text("%s: %s", localization::get(name.data()), localization::get(m_options[m_value]));
     }
 
     void config_load(const utility::Config& cfg, bool set_defaults) override {
@@ -451,7 +459,7 @@ public:
         }
 
         ImGui::PushID(this);
-        ImGui::Button(name.data());
+        ImGui::Button(localization::get(name.data()));
         context_menu_logic();
 
         if (ImGui::IsItemHovered() && ImGui::GetIO().MouseDown[0]) {
@@ -473,7 +481,7 @@ public:
             }
 
             ImGui::SameLine();
-            ImGui::Text("Press any key...");
+            ImGui::Text("%s", localization::get("Press any key..."));
         }
         else {
             ImGui::SameLine();
@@ -483,11 +491,11 @@ public:
                     ImGui::Text("%s", keycodes[m_value].c_str());
                 }
                 else {
-                    ImGui::Text("%i (Unknown)", m_value);
+                    ImGui::Text(localization::get("%i (Unknown)"), m_value);
                 }
             }
             else {
-                ImGui::Text("Not bound");
+                ImGui::Text("%s", localization::get("Not bound"));
             }
         }
 
@@ -571,7 +579,7 @@ public:
             return;
         }
 
-        ImGui::Text("%s: %s", name.data(), m_value.c_str());
+        ImGui::Text("%s: %s", localization::get(name.data()), m_value.c_str());
     }
 
     void config_load(const utility::Config& cfg, bool set_defaults) override {
