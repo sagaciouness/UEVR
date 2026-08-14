@@ -1260,7 +1260,7 @@ void Framework::draw_ui() {
         m_cursor_state_changed = false;
     }
     
-    const auto uevr_name = std::format("{} [{}+{}-{:.8}]###UEVRMainWindow", localization::get("UEVR-NRC Morefun Compatibility Edition"),
+    const auto uevr_name = std::format("{} [{}+{}-{:.8}]###UEVRMainWindow", localization::get("UEVR Roco Kingdom MorefunUE4 Compatibility Edition"),
         UEVR_TAG, UEVR_COMMITS_PAST_TAG, UEVR_COMMIT_HASH);
 
     ImGui::SetNextWindowSize(ImVec2(window_w, window_h), ImGuiCond_::ImGuiCond_Once);
