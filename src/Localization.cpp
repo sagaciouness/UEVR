@@ -14,6 +14,7 @@ std::atomic<Language> g_language{Language::ZH_CN};
 
 const std::unordered_map<std::string_view, std::string_view> ZH_CN{
     {"About"sv, "关于"sv},
+    {"UEVR-NRC Morefun Compatibility Edition"sv, "UEVR-NRC Morefun 兼容版"sv},
     {"FrameworkConfig"sv, "框架设置"sv},
     {"Main"sv, "主要设置"sv},
     {"GUI/Themes"sv, "界面/主题"sv},

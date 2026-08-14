@@ -1260,10 +1260,11 @@ void Framework::draw_ui() {
         m_cursor_state_changed = false;
     }
     
-    static const auto UEVR_NAME = std::format("UEVR [{}+{}-{:.8}]", UEVR_TAG, UEVR_COMMITS_PAST_TAG, UEVR_COMMIT_HASH);
+    const auto uevr_name = std::format("{} [{}+{}-{:.8}]###UEVRMainWindow", localization::get("UEVR-NRC Morefun Compatibility Edition"),
+        UEVR_TAG, UEVR_COMMITS_PAST_TAG, UEVR_COMMIT_HASH);
 
     ImGui::SetNextWindowSize(ImVec2(window_w, window_h), ImGuiCond_::ImGuiCond_Once);
-    ImGui::Begin(UEVR_NAME.c_str(), &m_draw_ui);
+    ImGui::Begin(uevr_name.c_str(), &m_draw_ui);
 
     ImGui::BeginGroup();
     ImGui::Columns(2);
