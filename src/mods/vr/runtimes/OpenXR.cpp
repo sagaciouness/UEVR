@@ -5,6 +5,8 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <cmath>
+#include <format>
 
 #include <spdlog/spdlog.h>
 
@@ -16,6 +18,7 @@
 #include <sdk/Globals.hpp>
 
 #include "Framework.hpp"
+#include "utility/NrcDebug.hpp"
 
 #include "../../VR.hpp"
 #include "OpenXR.hpp"
@@ -23,6 +26,237 @@
 using namespace nlohmann;
 
 namespace runtimes {
+namespace {
+void log_desktop_spectator(std::string_view message) {
+    spdlog::info("[VR][CinematicSpectator] {}", message);
+    nrc_debug::log("CINEMATIC_SPECTATOR", message);
+}
+}
+
+std::string_view OpenXR::get_desktop_spectator_status() const {
+    switch (desktop_spectator.status) {
+    case DesktopSpectatorStatus::WaitingForFov:
+        return "Waiting for OpenXR FOV";
+    case DesktopSpectatorStatus::Active:
+        return "Active";
+    case DesktopSpectatorStatus::Fallback:
+        return "Fallback";
+    default:
+        return "Off";
+    }
+}
+
+void OpenXR::configure_desktop_spectator(bool requested, uint32_t eye, float aspect, bool d3d11, bool extreme, bool using_2d_screen) {
+    desktop_spectator = {};
+    desktop_spectator.requested = requested;
+    desktop_spectator.eye = eye > 1 ? 1 : eye;
+    desktop_spectator.aspect = aspect;
+    desktop_spectator.effective_aspect = aspect;
+    desktop_spectator.extreme = extreme;
+
+    log_desktop_spectator(std::format(
+        "Session config requested={} eye={} aspect={} renderer={} path={}",
+        requested,
+        desktop_spectator.eye == 0 ? "left" : "right",
+        aspect,
+        d3d11 ? "D3D11" : "D3D12",
+        extreme ? "Extreme/AFR" : "standard"));
+
+    if (!requested) {
+        return;
+    }
+
+    desktop_spectator.status = DesktopSpectatorStatus::WaitingForFov;
+    view_bounds[0][0] = view_bounds[1][0] = 0.0f;
+    view_bounds[0][1] = view_bounds[1][1] = 1.0f;
+    view_bounds[0][2] = view_bounds[1][2] = 0.0f;
+    view_bounds[0][3] = view_bounds[1][3] = 1.0f;
+    should_recalculate_eye_projections = true;
+
+    if (!d3d11) {
+        fallback_desktop_spectator("Cinematic spectator currently supports D3D11 only", false);
+    } else if (using_2d_screen) {
+        fallback_desktop_spectator("Cinematic spectator is unavailable in 2D Screen Mode", false);
+    } else if (!std::isfinite(aspect) || aspect < 1.0f || aspect > 3.0f) {
+        fallback_desktop_spectator(std::format("Invalid spectator aspect {} (expected 1.0 to 3.0)", aspect), false);
+    }
+}
+
+void OpenXR::fallback_desktop_spectator(std::string reason, bool request_render_reset) {
+    if (desktop_spectator.status == DesktopSpectatorStatus::Fallback) {
+        return;
+    }
+
+    const bool dimensions_changed = desktop_spectator.status == DesktopSpectatorStatus::Active && !desktop_spectator.extreme;
+    desktop_spectator.status = DesktopSpectatorStatus::Fallback;
+    desktop_spectator.fallback_reason = std::move(reason);
+    eye_width_adjustment = 1.0f;
+    eye_height_adjustment = 1.0f;
+    view_bounds[0][0] = view_bounds[1][0] = 0.0f;
+    view_bounds[0][1] = view_bounds[1][1] = 1.0f;
+    view_bounds[0][2] = view_bounds[1][2] = 0.0f;
+    view_bounds[0][3] = view_bounds[1][3] = 1.0f;
+    should_recalculate_eye_projections = true;
+
+    log_desktop_spectator(std::format("Fallback to DesktopRecordingFix_V2: {}", desktop_spectator.fallback_reason));
+
+    if (request_render_reset && dimensions_changed) {
+        if (const auto vr = VR::get(); vr != nullptr && vr->get_fake_stereo_hook() != nullptr) {
+            vr->get_fake_stereo_hook()->set_should_recreate_textures(true);
+            vr->reinitialize_renderer();
+        }
+    }
+}
+
+void OpenXR::initialize_desktop_spectator() {
+    if (desktop_spectator.status != DesktopSpectatorStatus::WaitingForFov) {
+        return;
+    }
+
+    if (views.size() < 2 || view_configs.size() < 2) {
+        fallback_desktop_spectator("OpenXR did not provide two stereo views", false);
+        return;
+    }
+
+    desktop_spectator.original_width = static_cast<uint32_t>(
+        static_cast<float>(view_configs[0].recommendedImageRectWidth) * resolution_scale->value());
+    desktop_spectator.original_height = static_cast<uint32_t>(
+        static_cast<float>(view_configs[0].recommendedImageRectHeight) * resolution_scale->value());
+
+    if (desktop_spectator.original_width == 0 || desktop_spectator.original_height == 0) {
+        fallback_desktop_spectator("OpenXR returned a zero-sized recommended eye texture", false);
+        return;
+    }
+
+    for (uint32_t eye = 0; eye < 2; ++eye) {
+        desktop_spectator.raw_fov[eye] = {
+            raw_projections[eye][0], raw_projections[eye][1], raw_projections[eye][2], raw_projections[eye][3]};
+
+        for (const auto value : desktop_spectator.raw_fov[eye]) {
+            if (!std::isfinite(value)) {
+                fallback_desktop_spectator(std::format("OpenXR eye {} returned a non-finite FOV tangent", eye), false);
+                return;
+            }
+        }
+
+        if (raw_projections[eye][1] <= raw_projections[eye][0] || raw_projections[eye][2] <= raw_projections[eye][3]) {
+            fallback_desktop_spectator(std::format("OpenXR eye {} returned an invalid FOV span", eye), false);
+            return;
+        }
+    }
+
+    const auto selected_eye = desktop_spectator.eye;
+    const auto original_horizontal = raw_projections[selected_eye][1] - raw_projections[selected_eye][0];
+    const auto vertical = raw_projections[selected_eye][2] - raw_projections[selected_eye][3];
+    const auto target_horizontal = std::max(original_horizontal, vertical * desktop_spectator.aspect);
+    auto scale = target_horizontal / original_horizontal;
+
+    if (!std::isfinite(scale) || scale < 1.0f) {
+        fallback_desktop_spectator("Calculated horizontal projection scale is invalid", false);
+        return;
+    }
+
+    if (desktop_spectator.extreme) {
+        desktop_spectator.expanded_width = desktop_spectator.original_width;
+    } else {
+        const auto vr = VR::get();
+        const auto texture_width_multiplier = vr != nullptr && vr->is_using_afr() ? 1U : 2U;
+        const auto max_eye_width = D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION / texture_width_multiplier;
+        const auto expanded_width = std::ceil(
+            static_cast<double>(desktop_spectator.original_width) * static_cast<double>(scale));
+
+        if (!std::isfinite(expanded_width) || expanded_width < desktop_spectator.original_width ||
+            expanded_width > max_eye_width ||
+            desktop_spectator.original_height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION) {
+            fallback_desktop_spectator(std::format(
+                "Expanded render target {}x{} exceeds the D3D11 texture limit",
+                expanded_width * texture_width_multiplier,
+                desktop_spectator.original_height), false);
+            return;
+        }
+
+        desktop_spectator.expanded_width = static_cast<uint32_t>(expanded_width);
+        scale = static_cast<float>(desktop_spectator.expanded_width) /
+                static_cast<float>(desktop_spectator.original_width);
+    }
+
+    desktop_spectator.horizontal_scale = scale;
+    desktop_spectator.effective_aspect = original_horizontal * scale / vertical;
+
+    if (!std::isfinite(desktop_spectator.effective_aspect)) {
+        fallback_desktop_spectator("Calculated spectator aspect is invalid", false);
+        return;
+    }
+
+    for (uint32_t eye = 0; eye < 2; ++eye) {
+        const auto raw_left = raw_projections[eye][0];
+        const auto raw_right = raw_projections[eye][1];
+        const auto raw_top = raw_projections[eye][2];
+        const auto raw_bottom = raw_projections[eye][3];
+        const auto center = (raw_left + raw_right) * 0.5f;
+        const auto expanded_span = (raw_right - raw_left) * scale;
+        const auto expanded_left = center - expanded_span * 0.5f;
+        const auto expanded_right = center + expanded_span * 0.5f;
+
+        if (!std::isfinite(expanded_span) || !std::isfinite(expanded_left) || !std::isfinite(expanded_right)) {
+            fallback_desktop_spectator(std::format("Calculated expanded FOV is invalid for eye {}", eye), false);
+            return;
+        }
+
+        desktop_spectator.expanded_fov[eye] = {expanded_left, expanded_right, raw_top, raw_bottom};
+        desktop_spectator.uv_bounds[eye] = {
+            (raw_left - expanded_left) / expanded_span,
+            (raw_right - expanded_left) / expanded_span,
+            0.0f,
+            1.0f};
+
+        const auto& uv = desktop_spectator.uv_bounds[eye];
+        if (!std::isfinite(uv[0]) || !std::isfinite(uv[1]) ||
+            uv[0] < 0.0f || uv[1] > 1.0f || uv[0] >= uv[1]) {
+            fallback_desktop_spectator(std::format("Calculated OpenXR UV bounds are invalid for eye {}", eye), false);
+            return;
+        }
+    }
+
+    const auto vr = VR::get();
+    if (!desktop_spectator.extreme && (vr == nullptr || vr->get_fake_stereo_hook() == nullptr)) {
+        fallback_desktop_spectator("Unreal stereo render target hook is unavailable", false);
+        return;
+    }
+
+    eye_width_adjustment = desktop_spectator.extreme ? 1.0f : scale;
+    eye_height_adjustment = 1.0f;
+    desktop_spectator.status = DesktopSpectatorStatus::Active;
+
+    log_desktop_spectator(std::format(
+        "Activated eye={} requested_aspect={} effective_aspect={} scale={} original={}x{} expanded={}x{} extreme={}",
+        selected_eye == 0 ? "left" : "right",
+        desktop_spectator.aspect,
+        desktop_spectator.effective_aspect,
+        scale,
+        desktop_spectator.original_width,
+        desktop_spectator.original_height,
+        desktop_spectator.expanded_width,
+        desktop_spectator.original_height,
+        desktop_spectator.extreme));
+
+    for (uint32_t eye = 0; eye < 2; ++eye) {
+        const auto& raw = desktop_spectator.raw_fov[eye];
+        const auto& expanded = desktop_spectator.expanded_fov[eye];
+        const auto& uv = desktop_spectator.uv_bounds[eye];
+        log_desktop_spectator(std::format(
+            "eye={} raw_tan=[{},{},{},{}] expanded_tan=[{},{},{},{}] submit_uv=[{},{},{},{}]",
+            eye == 0 ? "left" : "right",
+            raw[0], raw[1], raw[2], raw[3],
+            expanded[0], expanded[1], expanded[2], expanded[3],
+            uv[0], uv[1], uv[2], uv[3]));
+    }
+
+    if (!desktop_spectator.extreme) {
+        vr->get_fake_stereo_hook()->set_should_recreate_textures(true);
+        vr->reinitialize_renderer();
+    }
+}
 void OpenXR::on_draw_ui() {
     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
     if (ImGui::TreeNode(localization::get("OpenXR Options"))) {
@@ -384,6 +618,11 @@ uint32_t OpenXR::get_width() const {
     if (this->view_configs.empty()) {
         return 0;
     }
+
+    if (is_desktop_spectator_active() && !desktop_spectator.extreme) {
+        return desktop_spectator.expanded_width;
+    }
+
     return (uint32_t)((float)this->view_configs[0].recommendedImageRectWidth * this->resolution_scale->value() * eye_width_adjustment);
 }
 
@@ -471,7 +710,7 @@ VRRuntime::Error OpenXR::update_matrices(float nearz, float farz) {
         return VRRuntime::Error::SUCCESS;
     }
 
-    if (!this->session_ready || this->views.empty()) {
+    if (!this->session_ready || this->views.size() < 2) {
         return VRRuntime::Error::SUCCESS;
     }
 
@@ -488,7 +727,11 @@ VRRuntime::Error OpenXR::update_matrices(float nearz, float farz) {
         const auto& vr = VR::get();
         std::array<float, 4> tan_half_fov{};
 
-        if (vr->get_horizontal_projection_override() == VR::HORIZONTAL_PROJECTION_OVERRIDE::HORIZONTAL_SYMMETRIC) {
+        const auto cinematic_spectator = is_desktop_spectator_active();
+
+        if (cinematic_spectator) {
+            tan_half_fov = desktop_spectator.expanded_fov[eye];
+        } else if (vr->get_horizontal_projection_override() == VR::HORIZONTAL_PROJECTION_OVERRIDE::HORIZONTAL_SYMMETRIC) {
             tan_half_fov[0] = -std::max(std::max(-this->raw_projections[0][0], this->raw_projections[0][1]),
                                         std::max(-this->raw_projections[1][0], this->raw_projections[1][1]));
             tan_half_fov[1] = -tan_half_fov[0];
@@ -502,27 +745,42 @@ VRRuntime::Error OpenXR::update_matrices(float nearz, float farz) {
             tan_half_fov[1] = this->raw_projections[eye][1];
         }
 
-        if (vr->get_vertical_projection_override() == VR::VERTICAL_PROJECTION_OVERRIDE::VERTICAL_SYMMETRIC) {
-            tan_half_fov[2] = std::max(std::max(this->raw_projections[0][2], -this->raw_projections[0][3]),
-                                        std::max(this->raw_projections[1][2], -this->raw_projections[1][3]));
-            tan_half_fov[3] = -tan_half_fov[2];
-        } else if (vr->get_vertical_projection_override() == VR::VERTICAL_PROJECTION_OVERRIDE::VERTICAL_MATCHED) {
-            float max_top = std::max(this->raw_projections[0][2], this->raw_projections[1][2]);
-            float max_bottom = std::max(-this->raw_projections[0][3], -this->raw_projections[1][3]);
-            tan_half_fov[2] = max_top;
-            tan_half_fov[3] = -max_bottom;
-        } else {
-            tan_half_fov[2] = this->raw_projections[eye][2];
-            tan_half_fov[3] = this->raw_projections[eye][3];
+        if (!cinematic_spectator) {
+            if (vr->get_vertical_projection_override() == VR::VERTICAL_PROJECTION_OVERRIDE::VERTICAL_SYMMETRIC) {
+                tan_half_fov[2] = std::max(std::max(this->raw_projections[0][2], -this->raw_projections[0][3]),
+                                            std::max(this->raw_projections[1][2], -this->raw_projections[1][3]));
+                tan_half_fov[3] = -tan_half_fov[2];
+            } else if (vr->get_vertical_projection_override() == VR::VERTICAL_PROJECTION_OVERRIDE::VERTICAL_MATCHED) {
+                float max_top = std::max(this->raw_projections[0][2], this->raw_projections[1][2]);
+                float max_bottom = std::max(-this->raw_projections[0][3], -this->raw_projections[1][3]);
+                tan_half_fov[2] = max_top;
+                tan_half_fov[3] = -max_bottom;
+            } else {
+                tan_half_fov[2] = this->raw_projections[eye][2];
+                tan_half_fov[3] = this->raw_projections[eye][3];
+            }
         }
-        view_bounds[eye][0] = 0.5f - 0.5f * this->raw_projections[eye][0] / tan_half_fov[0];
-        view_bounds[eye][1] = 0.5f + 0.5f * this->raw_projections[eye][1] / tan_half_fov[1];
-        view_bounds[eye][2] = 0.5f - 0.5f * this->raw_projections[eye][2] / tan_half_fov[2];
-        view_bounds[eye][3] = 0.5f + 0.5f * this->raw_projections[eye][3] / tan_half_fov[3];
+
+        if (cinematic_spectator) {
+            const auto expanded_horizontal = tan_half_fov[1] - tan_half_fov[0];
+            const auto expanded_vertical = tan_half_fov[2] - tan_half_fov[3];
+            view_bounds[eye][0] = (this->raw_projections[eye][0] - tan_half_fov[0]) / expanded_horizontal;
+            view_bounds[eye][1] = (this->raw_projections[eye][1] - tan_half_fov[0]) / expanded_horizontal;
+            view_bounds[eye][2] = (tan_half_fov[2] - this->raw_projections[eye][2]) / expanded_vertical;
+            view_bounds[eye][3] = (tan_half_fov[2] - this->raw_projections[eye][3]) / expanded_vertical;
+        } else {
+            view_bounds[eye][0] = 0.5f - 0.5f * this->raw_projections[eye][0] / tan_half_fov[0];
+            view_bounds[eye][1] = 0.5f + 0.5f * this->raw_projections[eye][1] / tan_half_fov[1];
+            view_bounds[eye][2] = 0.5f - 0.5f * this->raw_projections[eye][2] / tan_half_fov[2];
+            view_bounds[eye][3] = 0.5f + 0.5f * this->raw_projections[eye][3] / tan_half_fov[3];
+        }
 
         // if we've derived the right eye, we have up to date view bounds for both so adjust the render target if necessary
         if (eye == 1) {
-            if (vr->should_grow_rectangle_for_projection_cropping()) {
+            if (cinematic_spectator) {
+                eye_width_adjustment = desktop_spectator.extreme ? 1.0f : desktop_spectator.horizontal_scale;
+                eye_height_adjustment = 1.0f;
+            } else if (vr->should_grow_rectangle_for_projection_cropping()) {
                 eye_width_adjustment = 1 / std::max(view_bounds[0][1] - view_bounds[0][0], view_bounds[1][1] - view_bounds[1][0]);
                 eye_height_adjustment = 1 / std::max(view_bounds[0][3] - view_bounds[0][2], view_bounds[1][3] - view_bounds[1][2]);
             } else {
@@ -570,6 +828,29 @@ VRRuntime::Error OpenXR::update_matrices(float nearz, float farz) {
         this->raw_projections[1][1] = tan(right_fov.angleRight);
         this->raw_projections[1][2] = tan(right_fov.angleUp);
         this->raw_projections[1][3] = tan(right_fov.angleDown);
+
+        bool valid_fov = true;
+        for (uint32_t eye = 0; eye < 2; ++eye) {
+            const auto& fov = this->raw_projections[eye];
+            valid_fov = valid_fov && std::isfinite(fov[0]) && std::isfinite(fov[1]) &&
+                std::isfinite(fov[2]) && std::isfinite(fov[3]) && fov[1] > fov[0] && fov[2] > fov[3];
+        }
+
+        if (!valid_fov) {
+            if (desktop_spectator.status == DesktopSpectatorStatus::WaitingForFov && !desktop_spectator.fov_wait_logged) {
+                log_desktop_spectator("Waiting for the first valid xrLocateViews stereo FOV; projection update deferred");
+                desktop_spectator.fov_wait_logged = true;
+            }
+
+            this->should_update_eye_matrices = false;
+            return VRRuntime::Error::SUCCESS;
+        }
+
+        if (desktop_spectator.status == DesktopSpectatorStatus::WaitingForFov && desktop_spectator.fov_wait_logged) {
+            log_desktop_spectator("Valid xrLocateViews stereo FOV acquired; continuing Cinematic spectator initialization");
+        }
+
+        initialize_desktop_spectator();
         this->projections[0] = get_mat(0);
         this->projections[1] = get_mat(1);
         this->should_recalculate_eye_projections = false;
@@ -1814,23 +2095,55 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
             projection_layer_views[i].subImage.swapchain = swapchain->handle;
 
             int32_t offset_x = 0, offset_y = 0, extent_x = 0, extent_y = 0;
-            // if we're working with a double-wide texture, use half the view bounds adjustment (as they apply to a single eye)
-            int texture_area_width = is_afr ? swapchain->width : swapchain->width / 2;
-            if (is_afr || i == 0) {
-                offset_x = view_bounds[i][0] * texture_area_width;
-                extent_x = view_bounds[i][1] * texture_area_width - offset_x;
+            // If we're working with a double-wide texture, the bounds apply within one eye slot.
+            const int32_t texture_area_width = is_afr ? swapchain->width : swapchain->width / 2;
+
+            if (is_desktop_spectator_active()) {
+                const auto slot_offset = is_afr ? 0 : static_cast<int32_t>(i) * texture_area_width;
+                const auto left = std::clamp(
+                    static_cast<int32_t>(std::floor(view_bounds[i][0] * texture_area_width)),
+                    0, texture_area_width - 1);
+                const auto right = std::clamp(
+                    static_cast<int32_t>(std::ceil(view_bounds[i][1] * texture_area_width)),
+                    left + 1, texture_area_width);
+                const auto top = std::clamp(
+                    static_cast<int32_t>(std::floor(view_bounds[i][2] * swapchain->height)),
+                    0, swapchain->height - 1);
+                const auto bottom = std::clamp(
+                    static_cast<int32_t>(std::ceil(view_bounds[i][3] * swapchain->height)),
+                    top + 1, swapchain->height);
+
+                offset_x = slot_offset + left;
+                extent_x = right - left;
+                offset_y = top;
+                extent_y = bottom - top;
             } else {
-                // right eye double-wide
-                offset_x = texture_area_width + view_bounds[i][0] * texture_area_width;
-                extent_x = view_bounds[i][1] * texture_area_width - (offset_x - texture_area_width);
+                if (is_afr || i == 0) {
+                    offset_x = view_bounds[i][0] * texture_area_width;
+                    extent_x = view_bounds[i][1] * texture_area_width - offset_x;
+                } else {
+                    // Right eye in the double-wide texture.
+                    offset_x = texture_area_width + view_bounds[i][0] * texture_area_width;
+                    extent_x = view_bounds[i][1] * texture_area_width - (offset_x - texture_area_width);
+                }
+                offset_y = view_bounds[i][2] * swapchain->height;
+                extent_y = view_bounds[i][3] * swapchain->height - offset_y;
             }
-            offset_y = view_bounds[i][2] * swapchain->height;
-            extent_y = view_bounds[i][3] * swapchain->height - offset_y;
             
             // SPDLOG_INFO("image calc for eye {} {}, {}, {}, {}", i, offset_x, extent_x, offset_y, extent_y);
             projection_layer_views[i].subImage.imageRect.offset = {offset_x, offset_y};
             projection_layer_views[i].subImage.imageRect.extent = {extent_x, extent_y};
 
+            if (is_desktop_spectator_active() && !desktop_spectator.submission_logged) {
+                log_desktop_spectator(std::format(
+                    "OpenXR submit eye={} uv=[{},{},{},{}] imageRect=[{},{},{},{}] swapchain={}x{}",
+                    i == 0 ? "left" : "right",
+                    view_bounds[i][0], view_bounds[i][1], view_bounds[i][2], view_bounds[i][3],
+                    offset_x, offset_y, extent_x, extent_y, swapchain->width, swapchain->height));
+                if (i + 1 == projection_layer_views.size()) {
+                    desktop_spectator.submission_logged = true;
+                }
+            }
             if (has_depth) {
                 Swapchain* depth_swapchain = nullptr;
 

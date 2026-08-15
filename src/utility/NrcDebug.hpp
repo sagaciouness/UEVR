@@ -171,6 +171,10 @@ inline bool skip_initialize_hmd_device() {
     return is_target_process() && read_bool("NRCSkipInitializeHMDDevice", true);
 }
 
+inline bool independent_ui_render_target() {
+    return is_target_process() && read_bool("NRCIndependentUIRenderTarget", true);
+}
+
 inline bool replace_existing_stereo_device() {
     return is_target_process() && read_bool("NRCReplaceExistingStereoDevice", false);
 }
@@ -199,6 +203,7 @@ inline void log_configuration() {
             + " NRCDisableD3DRehook=" + (disable_d3d_rehook() ? "true" : "false")
             + " NRCDisableMessageHookReinit=" + (disable_message_hook_reinit() ? "true" : "false")
             + " NRCSkipInitializeHMDDevice=" + (skip_initialize_hmd_device() ? "true" : "false")
+            + " NRCIndependentUIRenderTarget=" + (independent_ui_render_target() ? "true" : "false")
             + " NRCReplaceExistingStereoDevice=" + (replace_existing_stereo_device() ? "true" : "false"));
 }
 }

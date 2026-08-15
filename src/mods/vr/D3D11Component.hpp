@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 
 #include <d3d11.h>
 #include <dxgi.h>
@@ -26,6 +27,7 @@ public:
     }
 
     vr::EVRCompositorError on_frame(VR* vr);
+    void on_post_slate_draw_window(VR* vr);
     void on_post_present(VR* vr);
     void on_reset(VR* vr);
 
@@ -59,6 +61,8 @@ private:
         TextureContext& srv,
         TextureContext& rtv,
         const RECT& src_rect);
+
+    bool ensure_nrc_native_ui_target(VR* vr, ID3D11Device* device, uint32_t width, uint32_t height);
 
     struct ShaderGlobals {
         DirectX::XMMATRIX mvp{};
@@ -133,6 +137,7 @@ private:
     };
 
     ComPtr<ID3D11Texture2D> m_ui_tex{};
+    TextureContext m_nrc_native_ui_ref{};
     TextureContext m_engine_ui_ref{};
     TextureContext m_engine_tex_ref{};
     TextureContext m_scene_capture_tex_ref{};
@@ -175,6 +180,16 @@ private:
     bool m_submitted_left_eye{false};
     bool m_is_shader_setup{false};
     bool m_last_afr_state{false};
+    bool m_cinematic_desktop_logged{false};
+    bool m_cinematic_afr_cache_logged{false};
+    bool m_cinematic_afr_restore_logged{false};
+    bool m_nrc_ui_hook_configured{false};
+    bool m_nrc_ui_redirect_logged{false};
+    bool m_nrc_ui_fallback_logged{false};
+    bool m_nrc_post_slate_cache_logged{false};
+    bool m_nrc_post_slate_restore_logged{false};
+    std::atomic_bool m_nrc_ui_capture_enabled{false};
+    std::atomic_bool m_nrc_post_slate_cache_ready{false};
 
     struct OpenXR {
         OpenXR(D3D11Component* p) : parent(p) {}

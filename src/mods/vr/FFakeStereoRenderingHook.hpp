@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <array>
 
@@ -74,6 +75,10 @@ public:
     bool create_scene_capture();
     void destroy_scene_capture();
 
+    // MorefunUE4 disables Unreal's separate render-target path in Extreme mode.
+    // Request a standalone game-UI target without changing that engine contract.
+    void request_nrc_ui_target();
+
     sdk::UTexture* get_scene_capture_utexture();
     
     sdk::FViewport* get_viewport() const {
@@ -133,6 +138,12 @@ protected:
 
     VerifiedFTexture2D ui_target{};
     VerifiedFTexture2D render_target{};
+    std::unique_ptr<FTexture2DRHIRef> nrc_ui_target_ref{};
+    sdk::UObjectReference<sdk::AActor> nrc_ui_owner_actor{nullptr};
+    sdk::UObjectReference<sdk::USceneCaptureComponent2D> nrc_ui_owner_component{nullptr};
+    sdk::UObjectReference<sdk::UTexture> nrc_ui_texture{nullptr};
+    std::atomic<uint8_t> nrc_ui_target_state{0}; // 0 idle, 1 creating, 2 ready, 3 failed
+    std::atomic_bool nrc_ui_wait_logged{false};
     static void pre_texture_hook_callback(safetyhook::Context& ctx, bool from_second = false); // only used if pixel format cvar is missing
     static void texture_hook_callback(safetyhook::Context& ctx, bool from_second = false);
 
@@ -299,6 +310,14 @@ public:
 
     bool is_slate_hooked() const {
         return m_hooked_slate_thread;
+    }
+
+    bool is_inside_slate_draw_window() const {
+        return m_inside_slate_draw_window;
+    }
+
+    uint64_t get_slate_draw_window_generation() const {
+        return m_slate_draw_window_generation.load(std::memory_order_relaxed);
     }
 
     bool should_recreate_textures() const {
@@ -544,6 +563,7 @@ private:
     bool m_has_game_viewport_client_draw_hook{false};
     bool m_skip_next_adjust_view_rect{true};
     bool m_inside_slate_draw_window{false};
+    std::atomic<uint64_t> m_slate_draw_window_generation{0};
     int32_t m_skip_next_adjust_view_rect_count{1};
     uint32_t m_slate_draw_window_thread_id{0};
 

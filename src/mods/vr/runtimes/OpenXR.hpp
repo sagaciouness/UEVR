@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <unordered_set>
 #include <deque>
 
@@ -32,6 +33,32 @@ struct OpenXR final : public VRRuntime {
         XrSwapchain handle;
         int32_t width;
         int32_t height;
+    };
+
+    enum class DesktopSpectatorStatus {
+        Disabled,
+        WaitingForFov,
+        Active,
+        Fallback,
+    };
+
+    struct DesktopSpectatorState {
+        DesktopSpectatorStatus status{DesktopSpectatorStatus::Disabled};
+        bool requested{false};
+        bool extreme{false};
+        uint32_t eye{1};
+        float aspect{16.0f / 9.0f};
+        uint32_t original_width{0};
+        uint32_t original_height{0};
+        uint32_t expanded_width{0};
+        float horizontal_scale{1.0f};
+        float effective_aspect{16.0f / 9.0f};
+        std::array<std::array<float, 4>, 2> raw_fov{};
+        std::array<std::array<float, 4>, 2> expanded_fov{};
+        std::array<std::array<float, 4>, 2> uv_bounds{};
+        std::string fallback_reason{};
+        bool submission_logged{false};
+        bool fov_wait_logged{false};
     };
 
     VRRuntime::Type type() const override { 
@@ -91,6 +118,17 @@ struct OpenXR final : public VRRuntime {
 
     VRRuntime::Error update_matrices(float nearz, float farz) override;
     VRRuntime::Error update_input() override;
+
+    void configure_desktop_spectator(bool requested, uint32_t eye, float aspect, bool d3d11, bool extreme, bool using_2d_screen);
+    void initialize_desktop_spectator();
+    void fallback_desktop_spectator(std::string reason, bool request_render_reset = true);
+
+    bool is_desktop_spectator_requested() const { return desktop_spectator.requested; }
+    bool is_desktop_spectator_active() const { return desktop_spectator.status == DesktopSpectatorStatus::Active; }
+    uint32_t get_desktop_spectator_eye() const { return desktop_spectator.eye; }
+    float get_desktop_spectator_aspect() const { return desktop_spectator.aspect; }
+    float get_desktop_spectator_effective_aspect() const { return desktop_spectator.effective_aspect; }
+    std::string_view get_desktop_spectator_status() const;
 
     void destroy() override;
     void enqueue_render_poses(uint32_t frame_count) override;
@@ -206,6 +244,7 @@ public:
     std::vector<XrViewConfigurationView> view_configs{};
     std::unordered_map<uint32_t, Swapchain> swapchains{}; // SwapchainIndex -> Swapchain
     std::vector<XrView> views{};
+    DesktopSpectatorState desktop_spectator{};
     std::vector<XrView> stage_views{};
 
     //std::deque<std::vector<XrView>> stage_view_queue{};

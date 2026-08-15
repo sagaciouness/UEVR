@@ -90,6 +90,124 @@ struct NrcStereoVtableEntryProbe {
     DWORD exception_code{};
 };
 
+struct NrcSlateTargetProbe {
+    sdk::FSlateResource* resource{};
+    FRHITexture2D* texture{};
+    void* texture_vtable{};
+    DWORD exception_code{};
+};
+
+// Verified against the current NRC MorefunUE4 build. These offsets are only
+// used for the target executable and every access is guarded before use.
+constexpr uintptr_t NRC_VIEWPORT_RT_PROVIDER_OFFSET = 0xC0;
+constexpr uintptr_t NRC_SLATE_RESOURCE_TEXTURE_OFFSET = 0x8;
+
+NrcSlateTargetProbe nrc_probe_slate_target(sdk::FViewportInfo* viewport_info) noexcept {
+    NrcSlateTargetProbe result{};
+
+    if (viewport_info == nullptr) {
+        return result;
+    }
+
+    __try {
+        const auto provider = *(sdk::IViewportRenderTargetProvider**)(
+            (uintptr_t)viewport_info + NRC_VIEWPORT_RT_PROVIDER_OFFSET);
+
+        if (provider == nullptr || *(void**)provider == nullptr) {
+            return result;
+        }
+
+        const auto resource = provider->get_viewport_render_target_texture();
+        if (resource == nullptr || *(void**)resource == nullptr) {
+            return result;
+        }
+
+        const auto texture = *(FRHITexture2D**)(
+            (uintptr_t)resource + NRC_SLATE_RESOURCE_TEXTURE_OFFSET);
+        if (texture == nullptr || *(void**)texture == nullptr) {
+            return result;
+        }
+
+        result.resource = resource;
+        result.texture = texture;
+        result.texture_vtable = *(void**)texture;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        result.resource = nullptr;
+        result.texture = nullptr;
+        result.texture_vtable = nullptr;
+        result.exception_code = GetExceptionCode();
+    }
+
+    return result;
+}
+
+bool nrc_replace_slate_target(
+    sdk::FSlateResource* resource,
+    FRHITexture2D* replacement,
+    FRHITexture2D*& previous,
+    DWORD& seh_code) noexcept
+{
+    seh_code = 0;
+
+    __try {
+        auto& target = *(FRHITexture2D**)(
+            (uintptr_t)resource + NRC_SLATE_RESOURCE_TEXTURE_OFFSET);
+        previous = target;
+        if (previous == nullptr) {
+            return false;
+        }
+        target = replacement;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        previous = nullptr;
+        seh_code = GetExceptionCode();
+        return false;
+    }
+}
+
+bool nrc_restore_slate_target(
+    sdk::FSlateResource* resource,
+    FRHITexture2D* previous,
+    DWORD& seh_code) noexcept
+{
+    seh_code = 0;
+
+    __try {
+        *(FRHITexture2D**)(
+            (uintptr_t)resource + NRC_SLATE_RESOURCE_TEXTURE_OFFSET) = previous;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        seh_code = GetExceptionCode();
+        return false;
+    }
+}
+
+struct NrcNativeTextureProbe {
+    ID3D11Texture2D* texture{};
+    D3D11_TEXTURE2D_DESC desc{};
+    DWORD exception_code{};
+};
+
+NrcNativeTextureProbe nrc_probe_native_texture(FRHITexture2D* texture) {
+    NrcNativeTextureProbe result{};
+
+    if (texture == nullptr) {
+        return result;
+    }
+
+    __try {
+        result.texture = (ID3D11Texture2D*)texture->get_native_resource();
+        if (result.texture != nullptr) {
+            result.texture->GetDesc(&result.desc);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        result.texture = nullptr;
+        result.exception_code = GetExceptionCode();
+    }
+
+    return result;
+}
+
 bool nrc_is_writable_page(DWORD protect) {
     if ((protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0) {
         return false;
@@ -6443,6 +6561,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         mod->on_pre_slate_draw_window(renderer, a2, viewport_info);
     }
 
+    g_hook->m_slate_draw_window_generation.fetch_add(1, std::memory_order_relaxed);
     g_hook->m_inside_slate_draw_window = true;
     g_hook->m_slate_draw_window_thread_id = GetCurrentThreadId();
 
@@ -6465,6 +6584,28 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         return call_orig();
     }
 
+    const auto nrc_ui_path =
+        nrc_debug::independent_ui_render_target() &&
+        g_framework->is_dx11() &&
+        vr->get_runtime() != nullptr &&
+        vr->get_runtime()->is_openxr() &&
+        vr->is_extreme_compatibility_mode_enabled();
+
+    sdk::FSlateResource* slate_resource = nullptr;
+    bool nrc_direct_slate_resource = false;
+
+    if (nrc_ui_path && slate_viewport == nullptr) {
+        static bool native_path_logged{};
+        if (!native_path_logged) {
+            native_path_logged = true;
+            SPDLOG_INFO("[NRC UI] Using native D3D11 Slate RTV redirection in Extreme mode");
+            nrc_debug::log(
+                "UI_RENDER_TARGET",
+                "Using native D3D11 Slate RTV redirection; Unreal separate RT remains disabled");
+        }
+        return call_orig();
+    }
+
     const auto ui_target = g_hook->get_render_target_manager()->get_ui_target();
 
     if (ui_target == nullptr) {
@@ -6472,11 +6613,9 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         return call_orig();
     }
 
-    sdk::FSlateResource* slate_resource = nullptr;
-
-    if (slate_viewport != nullptr) {
+    if (slate_resource == nullptr && slate_viewport != nullptr) {
         slate_resource = slate_viewport->GetViewportRenderTargetTexture();
-    } else {
+    } else if (slate_resource == nullptr) {
         const auto viewport_rt_provider = viewport_info->get_rt_provider(g_hook->get_render_target_manager()->get_render_target());
 
         if (viewport_rt_provider == nullptr) {
@@ -6494,19 +6633,61 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     
     // Replace the texture with one we have control over.
     // This isolates the UI to render on our own texture separate from the scene.
-    const auto old_texture = slate_resource->get_mutable_resource();
-    slate_resource->get_mutable_resource() = ui_target;
+    FRHITexture2D* old_texture{};
+    DWORD replace_exception{};
+
+    if (nrc_direct_slate_resource) {
+        if (!nrc_replace_slate_target(
+                slate_resource, ui_target, old_texture, replace_exception))
+        {
+            const auto reason =
+                "Failed to redirect Slate target; original HUD preserved code=" +
+                nrc_debug::pointer(replace_exception);
+            g_hook->get_render_target_manager()->get_ui_target() = nullptr;
+            SPDLOG_ERROR("[NRC UI] {}", reason);
+            nrc_debug::log("UI_RENDER_TARGET_FALLBACK", reason);
+            return call_orig();
+        }
+    } else {
+        old_texture = slate_resource->get_mutable_resource();
+        slate_resource->get_mutable_resource() = ui_target;
+    }
+
+    bool target_restored = false;
+    auto restore_target = [&]() {
+        if (target_restored) {
+            return;
+        }
+
+        if (nrc_direct_slate_resource) {
+            DWORD restore_exception{};
+            target_restored = nrc_restore_slate_target(
+                slate_resource, old_texture, restore_exception);
+            if (!target_restored) {
+                const auto reason =
+                    "Failed to restore Slate scene target code=" +
+                    nrc_debug::pointer(restore_exception);
+                SPDLOG_ERROR("[NRC UI] {}", reason);
+                nrc_debug::log("UI_RENDER_TARGET_FALLBACK", reason);
+            }
+        } else {
+            slate_resource->get_mutable_resource() = old_texture;
+            target_restored = true;
+        }
+    };
+    utility::ScopeGuard restore_guard{restore_target};
 
     // To be seen if we need to resort to a MidHook on this function if the parameters
     // are wildly different between UE versions.
     const auto ret = g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
 
     // Restore the old texture.
-    slate_resource->get_mutable_resource() = old_texture;
+    restore_target();
 
     for (auto& mod : mods) {
         mod->on_post_slate_draw_window(renderer, a2, viewport_info);
     }
+    g_hook->m_inside_slate_draw_window = false;
     
     // After this we copy over the texture and clear it in the present hook. doing it here just seems to crash sometimes.
     SPDLOG_INFO_ONCE("SlateRHIRenderer::DrawWindow_RenderThread finished!");
@@ -7461,6 +7642,231 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
     //rtm->ui_target = texture;
     rtm->texture_hook_ref = nullptr;
     ++rtm->last_texture_index;
+}
+
+void VRRenderTargetManager_Base::request_nrc_ui_target() {
+    auto vr = VR::get();
+
+    if (!nrc_debug::independent_ui_render_target() || !g_framework->is_dx11() ||
+        !vr->is_hmd_active() || vr->is_stereo_emulation_enabled() ||
+        vr->get_runtime() == nullptr ||
+        !vr->get_runtime()->is_openxr() ||
+        !vr->is_extreme_compatibility_mode_enabled())
+    {
+        return;
+    }
+
+    if (nrc_ui_target_state.load(std::memory_order_acquire) == 2 && get_ui_target() != nullptr) {
+        return;
+    }
+
+    uint8_t expected = 0;
+    if (!nrc_ui_target_state.compare_exchange_strong(expected, 1, std::memory_order_acq_rel)) {
+        return;
+    }
+
+    SPDLOG_INFO("[NRC UI] Queuing independent UI RenderTarget creation");
+    nrc_debug::log("UI_RENDER_TARGET", "Creation queued on game thread");
+
+    GameThreadWorker::get().enqueue([this]() -> void {
+        auto fail = [this](std::string_view reason) {
+            nrc_ui_target_state.store(3, std::memory_order_release);
+            SPDLOG_ERROR("[NRC UI] {}", reason);
+            nrc_debug::log("UI_RENDER_TARGET_FALLBACK", reason);
+        };
+
+        try {
+            auto vr = VR::get();
+            if (!nrc_debug::independent_ui_render_target() || !g_framework->is_dx11() ||
+                !vr->is_hmd_active() || vr->get_runtime() == nullptr ||
+                !vr->get_runtime()->is_openxr() ||
+                !vr->is_extreme_compatibility_mode_enabled())
+            {
+                fail("Runtime requirements changed before UI target creation");
+                return;
+            }
+
+            const auto size = g_framework->get_d3d11_rt_size();
+            const auto width = (uint32_t)size.x;
+            const auto height = (uint32_t)size.y;
+
+            if (width == 0 || height == 0 ||
+                width > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+                height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION)
+            {
+                fail("Invalid desktop RenderTarget size " + std::to_string(width) + "x" + std::to_string(height));
+                return;
+            }
+
+            auto engine = sdk::UGameEngine::get();
+            auto world = engine != nullptr ? engine->get_world() : nullptr;
+            if (world == nullptr) {
+                nrc_ui_target_state.store(0, std::memory_order_release);
+                if (!nrc_ui_wait_logged.exchange(true)) {
+                    SPDLOG_INFO("[NRC UI] Waiting for UWorld before creating UI RenderTarget");
+                    nrc_debug::log("UI_RENDER_TARGET", "Waiting for UWorld");
+                }
+                return;
+            }
+
+            auto kismet_rendering = sdk::UKismetRenderingLibrary::get();
+            auto gameplay_statics = sdk::UGameplayStatics::get();
+            auto actor_class = sdk::AActor::static_class();
+            auto component_class = sdk::USceneCaptureComponent2D::static_class();
+
+            if (kismet_rendering == nullptr || gameplay_statics == nullptr ||
+                actor_class == nullptr || component_class == nullptr)
+            {
+                fail("Required Unreal classes are unavailable");
+                return;
+            }
+
+            sdk::UObjectReference<sdk::AActor> owner{
+                gameplay_statics->spawn_actor(world, actor_class, glm::vec3{0.0f, 0.0f, 0.0f})};
+            if (owner == nullptr) {
+                fail("Failed to create UI RenderTarget owner actor");
+                return;
+            }
+
+            auto component_raw = (sdk::USceneCaptureComponent2D*)owner->add_component_by_class(
+                component_class, false);
+            if (component_raw == nullptr) {
+                owner->destroy_actor();
+                fail("Failed to create UI RenderTarget owner component");
+                return;
+            }
+
+            sdk::UObjectReference<sdk::USceneCaptureComponent2D> component{component_raw};
+            const float clear_color[4]{0.0f, 0.0f, 0.0f, 0.0f};
+            auto target_raw = kismet_rendering->create_render_target_2d(
+                world, width, height, 2, clear_color, false);
+            if (target_raw == nullptr) {
+                owner->destroy_actor();
+                fail("CreateRenderTarget2D returned null");
+                return;
+            }
+
+            sdk::UObjectReference<sdk::UTexture> target{target_raw};
+
+            owner->finish_add_component(component);
+            component->set_texture_target(target);
+            component->set_visibility(false);
+
+            if (auto capture_every_frame = component_class->find_property(L"bCaptureEveryFrame");
+                capture_every_frame != nullptr)
+            {
+                *capture_every_frame->get_data<bool>(component) = false;
+            }
+
+            if (auto capture_on_movement = component_class->find_property(L"bCaptureOnMovement");
+                capture_on_movement != nullptr)
+            {
+                *capture_on_movement->get_data<bool>(component) = false;
+            }
+
+            nrc_ui_owner_actor = owner;
+            nrc_ui_owner_component = component;
+            nrc_ui_texture = target;
+
+            RenderThreadWorker::ConditionalJobFunc ready = [this, target, width, height]() -> bool {
+                try {
+                    if (!target.valid()) {
+                        nrc_ui_target_state.store(3, std::memory_order_release);
+                        nrc_debug::log("UI_RENDER_TARGET_FALLBACK", "UI UTexture was destroyed before RHI initialization");
+                        return true;
+                    }
+
+                    if (!sdk::UTexture::update_render_resource_offset_texture2d(target)) {
+                        return false;
+                    }
+
+                    auto resource = (sdk::FTextureRenderTargetResource*)target->get_resource();
+                    if (resource == nullptr ||
+                        !sdk::FTextureRenderTargetResource::update_render_target_vtable_offset(resource))
+                    {
+                        return false;
+                    }
+
+                    auto render_target = resource->as_render_target();
+                    auto texture_ref = render_target != nullptr
+                        ? render_target->get_render_target_texture()
+                        : nullptr;
+                    auto texture = texture_ref != nullptr ? *texture_ref : nullptr;
+                    if (texture == nullptr) {
+                        return false;
+                    }
+
+                    const auto native = nrc_probe_native_texture(texture);
+                    if (native.texture == nullptr) {
+                        const auto reason = native.exception_code != 0
+                            ? "SEH while resolving native D3D11 UI texture code=" +
+                                nrc_debug::pointer(native.exception_code)
+                            : "UI RenderTarget has no native D3D11 texture";
+                        nrc_ui_target_state.store(3, std::memory_order_release);
+                        SPDLOG_ERROR("[NRC UI] {}", reason);
+                        nrc_debug::log("UI_RENDER_TARGET_FALLBACK", reason);
+                        return true;
+                    }
+
+                    const auto required_bind_flags =
+                        D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+                    if (native.desc.Width != width || native.desc.Height != height ||
+                        (native.desc.BindFlags & required_bind_flags) != required_bind_flags)
+                    {
+                        const auto reason =
+                            "Invalid native UI texture desc actual=" +
+                            std::to_string(native.desc.Width) + "x" +
+                            std::to_string(native.desc.Height) + " bind=" +
+                            nrc_debug::pointer(native.desc.BindFlags);
+                        nrc_ui_target_state.store(3, std::memory_order_release);
+                        SPDLOG_ERROR("[NRC UI] {}", reason);
+                        nrc_debug::log("UI_RENDER_TARGET_FALLBACK", reason);
+                        return true;
+                    }
+
+                    nrc_ui_target_ref = std::make_unique<FTexture2DRHIRef>(texture);
+                    ui_target = texture;
+                    nrc_ui_target_state.store(2, std::memory_order_release);
+
+                    const auto message =
+                        "Independent UI RenderTarget ready UE=" +
+                        nrc_debug::pointer((uintptr_t)texture) + " D3D11=" +
+                        nrc_debug::pointer((uintptr_t)native.texture) + " size=" +
+                        std::to_string(width) + "x" + std::to_string(height) +
+                        " format=" + std::to_string((uint32_t)native.desc.Format);
+                    SPDLOG_INFO("[NRC UI] {}", message);
+                    nrc_debug::log("UI_RENDER_TARGET", message);
+                    return true;
+                } catch (const std::exception& exception) {
+                    nrc_ui_target_state.store(3, std::memory_order_release);
+                    const auto reason = std::string{"C++ exception during RHI initialization: "} + exception.what();
+                    SPDLOG_ERROR("[NRC UI] {}", reason);
+                    nrc_debug::log("UI_RENDER_TARGET_FALLBACK", reason);
+                    return true;
+                } catch (...) {
+                    nrc_ui_target_state.store(3, std::memory_order_release);
+                    SPDLOG_ERROR("[NRC UI] Unknown exception during RHI initialization");
+                    nrc_debug::log("UI_RENDER_TARGET_FALLBACK", "Unknown exception during RHI initialization");
+                    return true;
+                }
+            };
+
+            RenderThreadWorker::ConditionalJobTimeoutFunc timeout = [this]() {
+                nrc_ui_target_state.store(3, std::memory_order_release);
+                SPDLOG_ERROR("[NRC UI] Timed out waiting for UI RenderTarget RHI resource");
+                nrc_debug::log(
+                    "UI_RENDER_TARGET_FALLBACK",
+                    "Timed out waiting for UI RenderTarget RHI resource");
+            };
+
+            RenderThreadWorker::get().enqueue_conditional(
+                ready, timeout, std::chrono::seconds(3));
+        } catch (const std::exception& exception) {
+            fail(std::string{"C++ exception during game-thread creation: "} + exception.what());
+        } catch (...) {
+            fail("Unknown exception during game-thread creation");
+        }
+    });
 }
 
 void VRRenderTargetManager_Base::destroy_scene_capture() try {

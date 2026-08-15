@@ -2,6 +2,8 @@
 #include <imgui_internal.h>
 #include <openvr.h>
 #include <d3dcompiler.h>
+#include <cmath>
+#include <format>
 
 namespace vertex_shader1 {
 #include "shaders/vs.hpp"
@@ -13,6 +15,7 @@ namespace pixel_shader1 {
 
 #include <utility/ScopeGuard.hpp>
 #include <utility/Logging.hpp>
+#include <utility/NrcDebug.hpp>
 
 #include "Framework.hpp"
 #include "../VR.hpp"
@@ -26,6 +29,34 @@ namespace pixel_shader1 {
 #else
 #define LOG_VERBOSE 
 #endif
+
+namespace {
+struct NrcD3D11UiProbe {
+    ID3D11Texture2D* texture{};
+    D3D11_TEXTURE2D_DESC desc{};
+    DWORD exception_code{};
+};
+
+NrcD3D11UiProbe nrc_probe_d3d11_ui(FRHITexture2D* texture) {
+    NrcD3D11UiProbe result{};
+
+    if (texture == nullptr) {
+        return result;
+    }
+
+    __try {
+        result.texture = (ID3D11Texture2D*)texture->get_native_resource();
+        if (result.texture != nullptr) {
+            result.texture->GetDesc(&result.desc);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        result.texture = nullptr;
+        result.exception_code = GetExceptionCode();
+    }
+
+    return result;
+}
+}
 
 #define SHADER_TEMP_DISABLED
 //#define AFR_DEPTH_TEMP_DISABLED
@@ -206,10 +237,102 @@ bool D3D11Component::TextureContext::clear_rtv(float* color) {
     return true;
 }
 
+bool D3D11Component::ensure_nrc_native_ui_target(
+    VR* vr,
+    ID3D11Device* device,
+    uint32_t width,
+    uint32_t height)
+{
+    if (!nrc_debug::independent_ui_render_target() || device == nullptr ||
+        vr == nullptr || vr->get_runtime() == nullptr ||
+        !vr->get_runtime()->is_openxr() ||
+        !vr->is_extreme_compatibility_mode_enabled())
+    {
+        return false;
+    }
+
+    if (width == 0 || height == 0 ||
+        width > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+        height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION)
+    {
+        if (!m_nrc_ui_fallback_logged) {
+            const auto reason = std::format("Invalid native UI target size {}x{}", width, height);
+            SPDLOG_ERROR("[NRC UI] {}", reason);
+            nrc_debug::log("UI_RENDER_TARGET_FALLBACK", reason);
+            m_nrc_ui_fallback_logged = true;
+        }
+        return false;
+    }
+
+    if (m_nrc_native_ui_ref.has_texture()) {
+        D3D11_TEXTURE2D_DESC current{};
+        static_cast<ID3D11Texture2D*>(m_nrc_native_ui_ref.tex.Get())->GetDesc(&current);
+
+        if (current.Width == width && current.Height == height &&
+            m_nrc_native_ui_ref.has_rtv() && m_nrc_native_ui_ref.has_srv())
+        {
+            return true;
+        }
+
+        m_nrc_native_ui_ref.reset();
+        m_engine_ui_ref.reset();
+    }
+
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = width;
+    desc.Height = height;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_TYPELESS;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+
+    ComPtr<ID3D11Texture2D> texture{};
+    const auto create_result = device->CreateTexture2D(&desc, nullptr, &texture);
+
+    if (FAILED(create_result) || texture == nullptr ||
+        !m_nrc_native_ui_ref.set(
+            texture.Get(),
+            DXGI_FORMAT_B8G8R8A8_UNORM,
+            DXGI_FORMAT_B8G8R8A8_UNORM))
+    {
+        m_nrc_native_ui_ref.reset();
+        if (!m_nrc_ui_fallback_logged) {
+            const auto reason = std::format(
+                "Failed to create native D3D11 UI target {}x{} HRESULT=0x{:08X}",
+                width,
+                height,
+                static_cast<uint32_t>(create_result));
+            SPDLOG_ERROR("[NRC UI] {}", reason);
+            nrc_debug::log("UI_RENDER_TARGET_FALLBACK", reason);
+            m_nrc_ui_fallback_logged = true;
+        }
+        return false;
+    }
+
+    float clear_color[4]{0.0f, 0.0f, 0.0f, 0.0f};
+    m_nrc_native_ui_ref.clear_rtv(clear_color);
+    m_nrc_ui_fallback_logged = false;
+
+    const auto message = std::format(
+        "Native D3D11 Slate UI target ready texture={} size={}x{} format={}",
+        nrc_debug::pointer(reinterpret_cast<uintptr_t>(texture.Get())),
+        width,
+        height,
+        static_cast<uint32_t>(desc.Format));
+    SPDLOG_INFO("[NRC UI] {}", message);
+    nrc_debug::log("UI_RENDER_TARGET", message);
+    return true;
+}
+
 vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
     if (m_force_reset || m_last_afr_state != vr->is_using_afr()) {
         if (!setup()) {
             SPDLOG_ERROR_EVERY_N_SEC(1, "Failed to setup D3D11Component, trying again next frame");
+            if (vr->m_openxr != nullptr && vr->m_openxr->is_desktop_spectator_active()) {
+                vr->m_openxr->fallback_desktop_spectator("D3D11 spectator texture setup failed");
+            }
             m_force_reset = true;
             return vr::VRCompositorError_None;
         }
@@ -254,7 +377,161 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
         return vr::VRCompositorError_None;
     }
 
+    D3D11_TEXTURE2D_DESC current_backbuffer_desc{};
+    backbuffer->GetDesc(&current_backbuffer_desc);
+    if (m_backbuffer_size[0] != 0 &&
+        (current_backbuffer_desc.Width != m_backbuffer_size[0] || current_backbuffer_desc.Height != m_backbuffer_size[1])) {
+        spdlog::info(
+            "[VR] D3D11 eye render target changed [{}x{}]->[{}x{}], rebuilding spectator resources",
+            m_backbuffer_size[0], m_backbuffer_size[1], current_backbuffer_desc.Width, current_backbuffer_desc.Height);
+        m_force_reset = true;
+        return vr::VRCompositorError_None;
+    }
+
     auto runtime = vr->get_runtime();
+
+    const auto nrc_native_ui_requested =
+        nrc_debug::independent_ui_render_target() &&
+        runtime != nullptr && runtime->is_openxr() &&
+        vr->is_extreme_compatibility_mode_enabled();
+    m_nrc_ui_capture_enabled.store(nrc_native_ui_requested, std::memory_order_release);
+
+    if (nrc_native_ui_requested && !m_nrc_ui_hook_configured) {
+        hook->on_set_render_targets(
+            [this](
+                D3D11Hook&,
+                ID3D11DeviceContext*,
+                UINT num_views,
+                ID3D11RenderTargetView* const* rtvs,
+                ID3D11DepthStencilView*) -> ComPtr<ID3D11RenderTargetView>
+            {
+                const auto vr = VR::get();
+                const auto ffsr = vr != nullptr ? vr->m_fake_stereo_hook.get() : nullptr;
+
+                struct SlateRedirectState {
+                    uint64_t generation{};
+                    Microsoft::WRL::ComPtr<ID3D11Resource> source_resource{};
+                    uint32_t bind_count{};
+                    uint32_t redirect_count{};
+                    uint32_t diagnosed_generations{};
+                    bool diagnose{};
+                };
+                static thread_local SlateRedirectState state{};
+
+                if (vr == nullptr || !m_nrc_ui_capture_enabled.load(std::memory_order_acquire) ||
+                    num_views != 1 || rtvs == nullptr || rtvs[0] == nullptr ||
+                    ffsr == nullptr || !ffsr->is_inside_slate_draw_window() ||
+                    !m_nrc_native_ui_ref.has_rtv())
+                {
+                    return {};
+                }
+
+                const auto generation = ffsr->get_slate_draw_window_generation();
+                if (generation == 0) {
+                    return {};
+                }
+
+                if (generation != state.generation) {
+                    if (state.diagnose && state.generation != 0) {
+                        const auto summary = std::format(
+                            "Slate RTV generation={} bindings={} redirected={}",
+                            state.generation,
+                            state.bind_count,
+                            state.redirect_count);
+                        SPDLOG_INFO("[NRC UI] {}", summary);
+                        nrc_debug::log("UI_RENDER_TARGET", summary);
+                    }
+
+                    state.generation = generation;
+                    state.source_resource.Reset();
+                    state.bind_count = 0;
+                    state.redirect_count = 0;
+                    state.diagnose = state.diagnosed_generations < 2;
+                    if (state.diagnose) {
+                        ++state.diagnosed_generations;
+                    }
+                }
+
+                ++state.bind_count;
+
+                ComPtr<ID3D11Resource> bound_resource{};
+                rtvs[0]->GetResource(&bound_resource);
+
+                ComPtr<ID3D11Texture2D> bound_texture{};
+                if (bound_resource == nullptr || FAILED(bound_resource.As(&bound_texture)) || bound_texture == nullptr) {
+                    return {};
+                }
+
+                D3D11_TEXTURE2D_DESC bound_desc{};
+                D3D11_TEXTURE2D_DESC ui_desc{};
+                bound_texture->GetDesc(&bound_desc);
+                static_cast<ID3D11Texture2D*>(m_nrc_native_ui_ref.tex.Get())->GetDesc(&ui_desc);
+
+                const auto matches_ui_extent =
+                    bound_desc.Width == ui_desc.Width && bound_desc.Height == ui_desc.Height;
+                bool selected_now = false;
+                bool cleared_now = false;
+
+                if (state.source_resource == nullptr && matches_ui_extent) {
+                    float clear_color[4]{0.0f, 0.0f, 0.0f, 0.0f};
+                    cleared_now = m_nrc_native_ui_ref.clear_rtv(clear_color);
+
+                    state.source_resource = bound_resource;
+                    selected_now = true;
+                }
+
+                const auto matches_source =
+                    state.source_resource != nullptr &&
+                    bound_resource.Get() == state.source_resource.Get();
+
+                if (state.diagnose && state.bind_count <= 24) {
+                    const auto diagnostic = std::format(
+                        "Slate RTV generation={} frame={} bind={} rtv={} resource={} size={}x{} format={} extent_match={} source_match={} selected={} cleared={}",
+                        generation,
+                        vr->m_render_frame_count,
+                        state.bind_count,
+                        nrc_debug::pointer(reinterpret_cast<uintptr_t>(rtvs[0])),
+                        nrc_debug::pointer(reinterpret_cast<uintptr_t>(bound_resource.Get())),
+                        bound_desc.Width,
+                        bound_desc.Height,
+                        static_cast<uint32_t>(bound_desc.Format),
+                        matches_ui_extent,
+                        matches_source,
+                        selected_now,
+                        cleared_now);
+                    SPDLOG_INFO("[NRC UI] {}", diagnostic);
+                    nrc_debug::log("UI_RENDER_TARGET", diagnostic);
+                }
+
+                if (!matches_source) {
+                    return {};
+                }
+
+                ++state.redirect_count;
+
+                if (!m_nrc_ui_redirect_logged) {
+                    const auto message = std::format(
+                        "Redirecting all matching Slate OMSetRenderTargets original={} resource={} replacement={}",
+                        nrc_debug::pointer(reinterpret_cast<uintptr_t>(rtvs[0])),
+                        nrc_debug::pointer(reinterpret_cast<uintptr_t>(bound_resource.Get())),
+                        nrc_debug::pointer(reinterpret_cast<uintptr_t>(m_nrc_native_ui_ref.rtv.Get())));
+                    SPDLOG_INFO("[NRC UI] {}", message);
+                    nrc_debug::log("UI_RENDER_TARGET", message);
+                    m_nrc_ui_redirect_logged = true;
+                }
+
+                return m_nrc_native_ui_ref.rtv;
+            });
+        m_nrc_ui_hook_configured = true;
+    }
+
+    const auto nrc_native_ui_ready =
+        nrc_native_ui_requested &&
+        ensure_nrc_native_ui_target(
+            vr,
+            device,
+            g_framework->get_d3d11_rt_size().x,
+            g_framework->get_d3d11_rt_size().y);
 
     const auto is_same_frame = m_last_rendered_frame > 0 && m_last_rendered_frame == vr->m_render_frame_count;
     m_last_rendered_frame = vr->m_render_frame_count;
@@ -344,13 +621,52 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
     // Update the UI overlay.
     const auto ui_target = ffsr->get_render_target_manager()->get_ui_target();
 
-    if (ui_target != nullptr) {
-        // We use SRGB for the RTV but not for the SRV because it screws up the colors when drawing the spectator view
-        m_engine_ui_ref.set((ID3D11Texture2D*)ui_target->get_native_resource(), DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_B8G8R8A8_UNORM);
+    if (nrc_native_ui_ready) {
+        m_engine_ui_ref.set(
+            m_nrc_native_ui_ref.tex.Get(),
+            DXGI_FORMAT_B8G8R8A8_UNORM,
+            DXGI_FORMAT_B8G8R8A8_UNORM);
+    } else if (ui_target != nullptr) {
+        ID3D11Texture2D* native{};
+        const auto nrc_independent_ui =
+            nrc_debug::independent_ui_render_target() &&
+            vr->is_extreme_compatibility_mode_enabled() &&
+            runtime->is_openxr();
+
+        if (nrc_independent_ui) {
+            const auto probe = nrc_probe_d3d11_ui(ui_target);
+            native = probe.texture;
+
+            if (native == nullptr) {
+                const auto reason =
+                    "D3D11 Present could not resolve independent UI texture code=" +
+                    nrc_debug::pointer(probe.exception_code);
+                ffsr->get_render_target_manager()->get_ui_target() = nullptr;
+                m_engine_ui_ref.reset();
+                SPDLOG_ERROR("[NRC UI] {}", reason);
+                nrc_debug::log("UI_RENDER_TARGET_FALLBACK", reason);
+            } else if (!m_engine_ui_ref.set(
+                           native,
+                           DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
+                           DXGI_FORMAT_B8G8R8A8_UNORM))
+            {
+                const auto reason =
+                    "D3D11 failed to create UI RTV/SRV; original HUD will be restored";
+                ffsr->get_render_target_manager()->get_ui_target() = nullptr;
+                m_engine_ui_ref.reset();
+                SPDLOG_ERROR("[NRC UI] {}", reason);
+                nrc_debug::log("UI_RENDER_TARGET_FALLBACK", reason);
+            }
+        } else {
+            native = (ID3D11Texture2D*)ui_target->get_native_resource();
+            m_engine_ui_ref.set(
+                native,
+                DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
+                DXGI_FORMAT_B8G8R8A8_UNORM);
+        }
 
         // Recreate UI texture if needed
         if (!vr->is_extreme_compatibility_mode_enabled()) {
-            const auto native = (ID3D11Texture2D*)ui_target->get_native_resource();
             const auto is_same_native = native == m_last_checked_native;
             m_last_checked_native = native;
 
@@ -496,10 +812,24 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
         }
     }
 
+    const auto preserve_nrc_ui_between_afr_eyes = nrc_native_ui_ready && is_actually_afr;
+    if (preserve_nrc_ui_between_afr_eyes) {
+        static bool persistence_logged{};
+        if (!persistence_logged) {
+            persistence_logged = true;
+            SPDLOG_INFO("[NRC UI] Preserving native UI target between AFR eyes; clearing at each Slate generation start");
+            nrc_debug::log(
+                "UI_RENDER_TARGET",
+                "Preserving native UI target between AFR eyes; clearing at each Slate generation start");
+        }
+    }
+
     utility::ScopeGuard engine_ui_guard([&]() {
-        // clear the game's UI texture
-        float clear_color[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-        m_engine_ui_ref.clear_rtv(clear_color);
+        if (!preserve_nrc_ui_between_afr_eyes) {
+            // Clear non-AFR UI after submission; NRC AFR clears before the next Slate draw instead.
+            float clear_color[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+            m_engine_ui_ref.clear_rtv(clear_color);
+        }
     });
 
     ComPtr<ID3D11Texture2D> scene_depth_tex{};
@@ -845,11 +1175,41 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
     }
 
     const auto should_draw_desktop = m_backbuffer_rtv != nullptr && vr->is_hmd_active() && vr->m_desktop_fix->value();
+    auto cinematic_desktop = runtime->is_openxr() && vr->m_openxr != nullptr && vr->m_openxr->is_desktop_spectator_active();
+    const auto selected_eye = cinematic_desktop ? vr->m_openxr->get_desktop_spectator_eye() : 1U;
+    const auto is_selected_eye_frame = !is_actually_afr ||
+        (selected_eye == 0
+            ? vr->m_render_frame_count % 2 == vr->m_left_eye_interval
+            : vr->m_render_frame_count % 2 == vr->m_right_eye_interval);
+    const auto should_compose_desktop = cinematic_desktop ? is_selected_eye_frame : is_right_eye_frame;
 
-    // Desktop fix
-    if (is_right_eye_frame && should_draw_desktop) {
+    if (cinematic_desktop && !m_engine_tex_ref.has_srv()) {
+        vr->m_openxr->fallback_desktop_spectator("D3D11 scene texture has no shader resource view");
+        cinematic_desktop = false;
+    }
+
+    const auto defer_nrc_desktop_ui_to_slate_completion =
+        nrc_native_ui_ready && is_actually_afr && cinematic_desktop;
+    const auto use_nrc_post_slate_cache =
+        defer_nrc_desktop_ui_to_slate_completion && is_selected_eye_frame &&
+        m_nrc_post_slate_cache_ready.exchange(false, std::memory_order_acq_rel) &&
+        m_spectator_view_backbuffer != nullptr && real_backbuffer != nullptr;
+
+    if (use_nrc_post_slate_cache) {
+        context->CopyResource(real_backbuffer.Get(), m_spectator_view_backbuffer.Get());
+        if (!m_nrc_post_slate_restore_logged) {
+            m_nrc_post_slate_restore_logged = true;
+            const auto message = std::format(
+                "Desktop restored completed post-Slate HUD cache frame={}", vr->m_render_frame_count);
+            SPDLOG_INFO("[NRC UI] {}", message);
+            nrc_debug::log("UI_RENDER_TARGET", message);
+        }
+    }
+
+    // Desktop spectator composition.
+    if (should_compose_desktop && !use_nrc_post_slate_cache && should_draw_desktop) {
         DX11StateBackup backup{context.Get()};
-        
+
         ID3D11RenderTargetView* views[] = { m_backbuffer_rtv.Get() };
         context->OMSetRenderTargets(1, views, nullptr);
 
@@ -861,7 +1221,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
         m_backbuffer_batch->SetViewport(viewport);
 
         context->RSSetViewports(1, &viewport);
-        
+
         D3D11_RECT scissor_rect{};
         scissor_rect.left = 0;
         scissor_rect.top = 0;
@@ -875,88 +1235,289 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
         dest_rect.right = m_real_backbuffer_size[0];
         dest_rect.bottom = m_real_backbuffer_size[1];
 
-        // Game tex
         if (m_engine_tex_ref.has_srv()) {
+            auto* source_context = &m_engine_tex_ref;
+            std::string_view source_name{"engine-double-wide"};
             RECT source_rect{};
 
-            const auto aspect_ratio = (float)m_real_backbuffer_size[0] / (float)m_real_backbuffer_size[1];
+            if (cinematic_desktop) {
+                if (!vr->is_extreme_compatibility_mode_enabled() &&
+                    !is_actually_afr && selected_eye == 1 && m_scene_capture_tex_ref.has_srv()) {
+                    source_context = &m_scene_capture_tex_ref;
+                    source_name = "native-stereo-scene-capture";
+                }
 
-            const auto eye_width = ((float)m_backbuffer_size[0] / 2.0f);
-            const auto eye_height = (float)m_backbuffer_size[1];
-            const auto eye_aspect_ratio = eye_width / eye_height;
+                D3D11_TEXTURE2D_DESC source_desc{};
+                static_cast<ID3D11Texture2D*>(source_context->tex.Get())->GetDesc(&source_desc);
+                const auto source_eye_width = vr->is_extreme_compatibility_mode_enabled()
+                    ? source_desc.Width
+                    : source_desc.Width / 2;
+                const auto invalid_source_layout = !vr->is_extreme_compatibility_mode_enabled() &&
+                    (source_desc.Width < 2 || source_desc.Width % 2 != 0);
 
-            const auto original_centerw = (float)eye_width / 2.0f;
-            const auto original_centerh = (float)eye_height / 2.0f;
-
-            // left side of double wide tex only on AFR/synced
-            if (vr->is_using_afr() || vr->is_native_stereo_fix_enabled()) {
                 source_rect.left = 0;
                 source_rect.top = 0;
-                source_rect.right = (LONG)eye_width;
-                source_rect.bottom = (LONG)eye_height;
-            } else {
-                source_rect.left = (LONG)eye_width;
-                source_rect.top = 0;
-                source_rect.right = (LONG)(eye_width * 2);
-                source_rect.bottom = (LONG)eye_height;
+                source_rect.right = static_cast<LONG>(source_eye_width);
+                source_rect.bottom = static_cast<LONG>(source_desc.Height);
+
+                if (!vr->is_extreme_compatibility_mode_enabled() &&
+                    !is_actually_afr && selected_eye == 1 && source_context == &m_engine_tex_ref) {
+                    source_rect.left = static_cast<LONG>(source_eye_width);
+                    source_rect.right = static_cast<LONG>(source_eye_width * 2);
+                }
+
+                if (vr->is_extreme_compatibility_mode_enabled()) {
+                    source_name = "extreme-full-backbuffer";
+                } else if (is_actually_afr) {
+                    source_name = "afr-current-eye";
+                }
+
+                const auto source_width = static_cast<float>(source_rect.right - source_rect.left);
+                const auto source_height = static_cast<float>(source_rect.bottom - source_rect.top);
+                const auto desktop_width = static_cast<float>(m_real_backbuffer_size[0]);
+                const auto desktop_height = static_cast<float>(m_real_backbuffer_size[1]);
+                const auto source_aspect = source_height > 0.0f ? source_width / source_height : 0.0f;
+                const auto desktop_aspect = desktop_height > 0.0f ? desktop_width / desktop_height : 0.0f;
+                const auto aspect_tolerance = std::max(
+                    source_height > 0.0f ? 1.0f / source_height : 1.0f,
+                    desktop_height > 0.0f ? 1.0f / desktop_height : 1.0f);
+
+                std::optional<std::string> fallback_reason{};
+                if (invalid_source_layout) {
+                    fallback_reason = std::format(
+                        "Cinematic desktop source width {} is not an even double-wide texture", source_desc.Width);
+                } else if (source_width <= 0.0f || source_height <= 0.0f) {
+                    fallback_reason = "Cinematic desktop source rectangle is empty";
+                } else if (std::abs(desktop_aspect - vr->m_openxr->get_desktop_spectator_aspect()) > aspect_tolerance) {
+                    fallback_reason = std::format(
+                        "Desktop BackBuffer aspect {} does not match requested aspect {}",
+                        desktop_aspect,
+                        vr->m_openxr->get_desktop_spectator_aspect());
+                } else if (std::abs(source_aspect - desktop_aspect) > aspect_tolerance) {
+                    fallback_reason = std::format(
+                        "Expanded eye aspect {} does not match Desktop BackBuffer aspect {}",
+                        source_aspect,
+                        desktop_aspect);
+                }
+
+                if (fallback_reason) {
+                    vr->m_openxr->fallback_desktop_spectator(*fallback_reason);
+                    cinematic_desktop = false;
+                } else if (!m_cinematic_desktop_logged) {
+                    const auto message = std::format(
+                        "Desktop source={} eye={} frame={} selected_frame=true rect=[{},{},{},{}] BackBuffer={}x{} AFR={} Extreme={} cache_before={}",
+                        source_name,
+                        selected_eye == 0 ? "left" : "right",
+                        vr->m_render_frame_count,
+                        source_rect.left,
+                        source_rect.top,
+                        source_rect.right,
+                        source_rect.bottom,
+                        m_real_backbuffer_size[0],
+                        m_real_backbuffer_size[1],
+                        is_actually_afr,
+                        vr->is_extreme_compatibility_mode_enabled(),
+                        m_spectator_view_backbuffer != nullptr);
+                    spdlog::info("[VR][CinematicSpectator] {}", message);
+                    nrc_debug::log("CINEMATIC_SPECTATOR", message);
+                    m_cinematic_desktop_logged = true;
+                }
             }
 
-            // Correct left/top/right/bottom to match the aspect ratio of the game
-            if (eye_aspect_ratio > aspect_ratio) {
-                const auto new_width = eye_height * aspect_ratio;
-                const auto new_centerw = new_width / 2.0f;
-                source_rect.left = (LONG)(original_centerw - new_centerw);
-                source_rect.right = (LONG)(original_centerw + new_centerw);
-            } else {
-                const auto new_height = eye_width / aspect_ratio;
-                const auto new_centerh = new_height / 2.0f;
-                source_rect.top = (LONG)(original_centerh - new_centerh);
-                source_rect.bottom = (LONG)(original_centerh + new_centerh);
+            if (!cinematic_desktop) {
+                source_context = &m_engine_tex_ref;
+                const auto aspect_ratio = static_cast<float>(m_real_backbuffer_size[0]) /
+                                          static_cast<float>(m_real_backbuffer_size[1]);
+                const auto eye_width = static_cast<float>(m_backbuffer_size[0]) / 2.0f;
+                const auto eye_height = static_cast<float>(m_backbuffer_size[1]);
+                const auto eye_aspect_ratio = eye_width / eye_height;
+                const auto original_centerw = eye_width / 2.0f;
+                const auto original_centerh = eye_height / 2.0f;
+
+                if (vr->is_using_afr() || vr->is_native_stereo_fix_enabled()) {
+                    source_rect = {0, 0, static_cast<LONG>(eye_width), static_cast<LONG>(eye_height)};
+                } else {
+                    source_rect = {
+                        static_cast<LONG>(eye_width), 0,
+                        static_cast<LONG>(eye_width * 2), static_cast<LONG>(eye_height)};
+                }
+
+                if (eye_aspect_ratio > aspect_ratio) {
+                    const auto new_width = eye_height * aspect_ratio;
+                    const auto new_centerw = new_width / 2.0f;
+                    source_rect.left = static_cast<LONG>(original_centerw - new_centerw);
+                    source_rect.right = static_cast<LONG>(original_centerw + new_centerw);
+                } else {
+                    const auto new_height = eye_width / aspect_ratio;
+                    const auto new_centerh = new_height / 2.0f;
+                    source_rect.top = static_cast<LONG>(original_centerh - new_centerh);
+                    source_rect.bottom = static_cast<LONG>(original_centerh + new_centerh);
+                }
             }
 
-            m_backbuffer_batch->Draw(m_engine_tex_ref, dest_rect, &source_rect, DirectX::Colors::White);
+            m_backbuffer_batch->Draw(*source_context, dest_rect, &source_rect, DirectX::Colors::White);
         }
 
-        // UI tex
-        if (m_engine_ui_ref.has_srv()) {
+        // Compose a separate UI target once when the engine provides one.
+        if (m_engine_ui_ref.has_srv() && !defer_nrc_desktop_ui_to_slate_completion) {
             m_backbuffer_batch->Draw(m_engine_ui_ref, dest_rect, DirectX::Colors::White);
         }
 
         m_backbuffer_batch->End();
 
-        // Create a copy of the backbuffer if we're using AFR
         if (is_actually_afr) {
-            ComPtr<ID3D11Texture2D> real_backbuffer{};
-            swapchain->GetBuffer(0, IID_PPV_ARGS(&real_backbuffer));
+            ComPtr<ID3D11Texture2D> current_real_backbuffer{};
+            swapchain->GetBuffer(0, IID_PPV_ARGS(&current_real_backbuffer));
 
-            if (m_spectator_view_backbuffer == nullptr && real_backbuffer != nullptr) {
+            if (m_spectator_view_backbuffer == nullptr && current_real_backbuffer != nullptr) {
                 D3D11_TEXTURE2D_DESC real_backbuffer_desc{};
-                real_backbuffer->GetDesc(&real_backbuffer_desc);
+                current_real_backbuffer->GetDesc(&real_backbuffer_desc);
                 if (FAILED(device->CreateTexture2D(&real_backbuffer_desc, nullptr, &m_spectator_view_backbuffer))) {
                     spdlog::error("[VR] Failed to create copied backbuffer for desktop view");
+                    if (cinematic_desktop) {
+                        vr->m_openxr->fallback_desktop_spectator("Failed to create AFR desktop spectator cache");
+                    }
                 }
             }
 
-            // Copy over the backbuffer every other frame
-            if (real_backbuffer != nullptr && m_spectator_view_backbuffer != nullptr) {
-                context->CopyResource(m_spectator_view_backbuffer.Get(), real_backbuffer.Get());
+            if (current_real_backbuffer != nullptr && m_spectator_view_backbuffer != nullptr) {
+                context->CopyResource(m_spectator_view_backbuffer.Get(), current_real_backbuffer.Get());
+
+                if (cinematic_desktop && !m_cinematic_afr_cache_logged) {
+                    const auto message = std::format(
+                        "AFR selected frame={} eye={} cache=stored",
+                        vr->m_render_frame_count,
+                        selected_eye == 0 ? "left" : "right");
+                    spdlog::info("[VR][CinematicSpectator] {}", message);
+                    nrc_debug::log("CINEMATIC_SPECTATOR", message);
+                    m_cinematic_afr_cache_logged = true;
+                }
             }
         } else {
-            m_spectator_view_backbuffer.Reset(); // Free as we have no use for it
+            m_spectator_view_backbuffer.Reset();
         }
     }
 
-    // Copy the previous right eye frame to the backbuffer if we're using AFR on an non-right eye frame
-    if (is_actually_afr && !is_right_eye_frame && should_draw_desktop && m_spectator_view_backbuffer != nullptr) {
-        ComPtr<ID3D11Texture2D> real_backbuffer{};
-        swapchain->GetBuffer(0, IID_PPV_ARGS(&real_backbuffer));
+    if (is_actually_afr && !should_compose_desktop && should_draw_desktop && m_spectator_view_backbuffer != nullptr) {
+        ComPtr<ID3D11Texture2D> current_real_backbuffer{};
+        swapchain->GetBuffer(0, IID_PPV_ARGS(&current_real_backbuffer));
 
-        if (real_backbuffer != nullptr) {
-            context->CopyResource(real_backbuffer.Get(), m_spectator_view_backbuffer.Get());
+        if (current_real_backbuffer != nullptr) {
+            context->CopyResource(current_real_backbuffer.Get(), m_spectator_view_backbuffer.Get());
+
+            if (cinematic_desktop && !m_cinematic_afr_restore_logged) {
+                const auto message = std::format(
+                    "AFR non-selected frame={} cache=restored", vr->m_render_frame_count);
+                spdlog::info("[VR][CinematicSpectator] {}", message);
+                nrc_debug::log("CINEMATIC_SPECTATOR", message);
+                m_cinematic_afr_restore_logged = true;
+            }
         }
     }
-
     return vr::VRCompositorError_None;
+}
+
+void D3D11Component::on_post_slate_draw_window(VR* vr) {
+    if (vr == nullptr || !m_nrc_ui_capture_enabled.load(std::memory_order_acquire) ||
+        !vr->is_using_afr() || !vr->is_extreme_compatibility_mode_enabled() ||
+        vr->m_openxr == nullptr || !vr->m_openxr->is_desktop_spectator_active() ||
+        !vr->m_desktop_fix->value() || !m_engine_tex_ref.has_srv() || !m_engine_ui_ref.has_srv() ||
+        m_backbuffer_batch == nullptr || m_spectator_view_backbuffer == nullptr)
+    {
+        return;
+    }
+
+    const auto selected_eye = vr->m_openxr->get_desktop_spectator_eye();
+    const auto is_selected_eye_frame = selected_eye == 0
+        ? vr->m_render_frame_count % 2 == vr->m_left_eye_interval
+        : vr->m_render_frame_count % 2 == vr->m_right_eye_interval;
+    if (!is_selected_eye_frame) {
+        return;
+    }
+
+    auto& hook = g_framework->get_d3d11_hook();
+    auto device = hook->get_device();
+    if (device == nullptr) {
+        return;
+    }
+
+    ComPtr<ID3D11DeviceContext> context{};
+    device->GetImmediateContext(&context);
+    if (context == nullptr) {
+        return;
+    }
+
+    D3D11_TEXTURE2D_DESC cache_desc{};
+    D3D11_TEXTURE2D_DESC scene_desc{};
+    m_spectator_view_backbuffer->GetDesc(&cache_desc);
+    static_cast<ID3D11Texture2D*>(m_engine_tex_ref.tex.Get())->GetDesc(&scene_desc);
+    if (cache_desc.Width != m_real_backbuffer_size[0] ||
+        cache_desc.Height != m_real_backbuffer_size[1] ||
+        scene_desc.Width == 0 || scene_desc.Height == 0)
+    {
+        return;
+    }
+
+    ComPtr<ID3D11RenderTargetView> cache_rtv{};
+    if (FAILED(device->CreateRenderTargetView(
+            m_spectator_view_backbuffer.Get(), nullptr, &cache_rtv)) || cache_rtv == nullptr)
+    {
+        SPDLOG_ERROR_EVERY_N_SEC(1, "[NRC UI] Failed to create post-Slate desktop cache RTV");
+        return;
+    }
+
+    DX11StateBackup backup{context.Get()};
+
+    ID3D11RenderTargetView* views[]{cache_rtv.Get()};
+    context->OMSetRenderTargets(1, views, nullptr);
+    float clear_color[4]{0.0f, 0.0f, 0.0f, 0.0f};
+    context->ClearRenderTargetView(cache_rtv.Get(), clear_color);
+
+    D3D11_VIEWPORT viewport{};
+    viewport.Width = static_cast<float>(m_real_backbuffer_size[0]);
+    viewport.Height = static_cast<float>(m_real_backbuffer_size[1]);
+    context->RSSetViewports(1, &viewport);
+
+    D3D11_RECT scissor_rect{
+        0, 0,
+        static_cast<LONG>(m_real_backbuffer_size[0]),
+        static_cast<LONG>(m_real_backbuffer_size[1])};
+    context->RSSetScissorRects(1, &scissor_rect);
+
+    RECT dest_rect{
+        0, 0,
+        static_cast<LONG>(m_real_backbuffer_size[0]),
+        static_cast<LONG>(m_real_backbuffer_size[1])};
+    RECT scene_rect{
+        0, 0,
+        static_cast<LONG>(scene_desc.Width),
+        static_cast<LONG>(scene_desc.Height)};
+
+    m_backbuffer_batch->Begin();
+    m_backbuffer_batch->SetViewport(viewport);
+    m_backbuffer_batch->Draw(m_engine_tex_ref, dest_rect, &scene_rect, DirectX::Colors::White);
+    m_backbuffer_batch->Draw(m_engine_ui_ref, dest_rect, DirectX::Colors::White);
+    m_backbuffer_batch->End();
+
+    m_nrc_post_slate_cache_ready.store(true, std::memory_order_release);
+
+    if (!m_nrc_post_slate_cache_logged) {
+        m_nrc_post_slate_cache_logged = true;
+        const auto generation = vr->m_fake_stereo_hook != nullptr
+            ? vr->m_fake_stereo_hook->get_slate_draw_window_generation()
+            : 0;
+        const auto message = std::format(
+            "Post-Slate desktop cache updated generation={} frame={} eye={} scene={}x{} cache={}x{}",
+            generation,
+            vr->m_render_frame_count,
+            selected_eye == 0 ? "left" : "right",
+            scene_desc.Width,
+            scene_desc.Height,
+            cache_desc.Width,
+            cache_desc.Height);
+        SPDLOG_INFO("[NRC UI] {}", message);
+        nrc_debug::log("UI_RENDER_TARGET", message);
+    }
 }
 
 void D3D11Component::on_post_present(VR* vr) {
@@ -1023,6 +1584,12 @@ void D3D11Component::on_reset(VR* vr) {
     m_backbuffer_batch.reset();
     m_game_batch.reset();
     m_is_shader_setup = false;
+    m_cinematic_desktop_logged = false;
+    m_cinematic_afr_cache_logged = false;
+    m_cinematic_afr_restore_logged = false;
+    m_nrc_post_slate_cache_logged = false;
+    m_nrc_post_slate_restore_logged = false;
+    m_nrc_post_slate_cache_ready.store(false, std::memory_order_release);
 
     for (auto& tex : m_2d_screen_tex) {
         tex.reset();
@@ -1051,7 +1618,15 @@ void D3D11Component::on_reset(VR* vr) {
             m_last_afr_state != vr->is_using_afr() ||
             needs_depth_resize)
         {
-            m_openxr.create_swapchains();
+            auto swapchain_error = m_openxr.create_swapchains();
+            if (swapchain_error && vr->m_openxr->is_desktop_spectator_active()) {
+                vr->m_openxr->fallback_desktop_spectator(
+                    std::format("Cinematic OpenXR swapchain rebuild failed: {}", *swapchain_error), false);
+                swapchain_error = m_openxr.create_swapchains();
+            }
+            if (swapchain_error) {
+                spdlog::error("[VR] OpenXR swapchain rebuild failed: {}", *swapchain_error);
+            }
             m_last_afr_state = vr->is_using_afr();
         }
     }

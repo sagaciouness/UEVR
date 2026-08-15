@@ -103,7 +103,10 @@ bool D3D11Hook::unhook() {
 
     spdlog::info("Unhooking D3D11");
 
-    if (m_present_hook->remove() && m_resize_buffers_hook->remove()) {
+    const auto set_render_targets_removed =
+        m_set_render_targets_hook == nullptr || m_set_render_targets_hook->remove();
+
+    if (m_present_hook->remove() && m_resize_buffers_hook->remove() && set_render_targets_removed) {
         m_hooked = false;
         return true;
     }
@@ -145,14 +148,14 @@ HRESULT WINAPI D3D11Hook::present(IDXGISwapChain* swap_chain, UINT sync_interval
 
     swap_chain->GetDevice(__uuidof(d3d11->m_device), (void**)&d3d11->m_device);
 
-    /*if (d3d11->m_set_render_targets_hook == nullptr) {
+    if (d3d11->m_set_render_targets_hook == nullptr && d3d11->m_on_set_render_targets != nullptr) {
         ComPtr<ID3D11DeviceContext> context{};
 
         d3d11->m_device->GetImmediateContext(&context);
         auto& set_render_targets_fn = (*(void***)context.Get())[33];
         d3d11->m_set_render_targets_hook = std::make_unique<PointerHook>(&set_render_targets_fn, (void*)&set_render_targets);
-        OutputDebugString("Hooked ID3D11DeviceContext::SetRenderTargets");
-    }*/
+        spdlog::info("Hooked ID3D11DeviceContext::OMSetRenderTargets");
+    }
 
     /*if (GetAsyncKeyState(VK_INSERT) & 1) {
         OutputDebugString(fmt::format("Depth stencil @ {:p} used", (void*)d3d11->m_last_depthstencil_used.Get()).c_str());
@@ -271,6 +274,22 @@ void WINAPI D3D11Hook::set_render_targets(
     std::scoped_lock _{g_framework->get_hook_monitor_mutex()};
 
     auto d3d11 = g_d3d11_hook;
+    auto set_render_targets_fn = d3d11->m_set_render_targets_hook->get_original<decltype(set_render_targets)*>();
+
+    if (d3d11->m_on_set_render_targets != nullptr) {
+        try {
+            auto replacement = d3d11->m_on_set_render_targets(*d3d11, context, num_views, rtvs, dsv);
+
+            if (replacement != nullptr) {
+                auto replacement_view = replacement.Get();
+                return set_render_targets_fn(context, 1, &replacement_view, nullptr);
+            }
+        } catch (const std::exception& exception) {
+            spdlog::error("D3D11 OMSetRenderTargets callback failed: {}", exception.what());
+        } catch (...) {
+            spdlog::error("D3D11 OMSetRenderTargets callback failed with an unknown exception");
+        }
+    }
 
     if (dsv != nullptr) {
         //auto obj_name = fmt::format("Depthstencil @ {:p}", (void*)d3d11->m_last_depthstencil_used.Get());
@@ -288,8 +307,6 @@ void WINAPI D3D11Hook::set_render_targets(
             //OutputDebugString(fmt::format("ViewDimension: {}", desc.ViewDimension).c_str());   
         }
     }
-
-    auto set_render_targets_fn = d3d11->m_set_render_targets_hook->get_original<decltype(set_render_targets)*>();
 
     return set_render_targets_fn(context, num_views, rtvs, dsv);
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <utility>
 
 #include <d3d11.h>
 #include <dxgi.h>
@@ -12,6 +13,12 @@ class D3D11Hook {
 public:
     typedef std::function<void(D3D11Hook&)> OnPresentFn;
     typedef std::function<void(D3D11Hook&, uint32_t w, uint32_t h)> OnResizeBuffersFn;
+    typedef std::function<Microsoft::WRL::ComPtr<ID3D11RenderTargetView>(
+        D3D11Hook&,
+        ID3D11DeviceContext*,
+        UINT,
+        ID3D11RenderTargetView* const*,
+        ID3D11DepthStencilView*)> OnSetRenderTargetsFn;
 
     D3D11Hook() = default;
     virtual ~D3D11Hook();
@@ -38,6 +45,7 @@ public:
     void on_present(OnPresentFn fn) { m_on_present = fn; }
     void on_post_present(OnPresentFn fn) { m_on_post_present = fn; }
     void on_resize_buffers(OnResizeBuffersFn fn) { m_on_resize_buffers = fn; }
+    void on_set_render_targets(OnSetRenderTargetsFn fn) { m_on_set_render_targets = std::move(fn); }
 
     ID3D11Device* get_device() { return m_device; }
     IDXGISwapChain* get_swap_chain() { return m_swap_chain; } // The "active" swap chain.
@@ -64,6 +72,7 @@ protected:
     OnPresentFn m_on_present{ nullptr };
     OnPresentFn m_on_post_present{ nullptr };
     OnResizeBuffersFn m_on_resize_buffers{ nullptr };
+    OnSetRenderTargetsFn m_on_set_render_targets{ nullptr };
     ComPtr<ID3D11Texture2D> m_last_depthstencil_used{};
 
     static HRESULT WINAPI present(IDXGISwapChain* swap_chain, UINT sync_interval, UINT flags);

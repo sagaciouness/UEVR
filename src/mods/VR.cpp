@@ -3,6 +3,7 @@
 #define NOMINMAX
 
 #include <fstream>
+#include <cmath>
 
 #include <windows.h>
 #include <dbt.h>
@@ -484,6 +485,13 @@ std::optional<std::string> VR::initialize_openxr() {
 
     // Step 6: Get the view configuration properties
     m_openxr->update_render_target_size();
+    m_openxr->configure_desktop_spectator(
+        is_cinematic_desktop_spectator_requested(),
+        get_desktop_spectator_eye(),
+        get_desktop_spectator_aspect(),
+        !g_framework->is_dx12(),
+        is_extreme_compatibility_mode_enabled(),
+        is_using_2d_screen());
 
     // Step 7: Create a view
     if (!m_openxr->view_configs.empty()){
@@ -575,6 +583,12 @@ std::optional<std::string> VR::initialize_openxr_swapchains() {
         }
     } else {
         auto err = m_d3d11.openxr().create_swapchains();
+
+        if (err && m_openxr->is_desktop_spectator_active()) {
+            m_openxr->fallback_desktop_spectator(
+                std::format("Cinematic OpenXR swapchain creation failed: {}", *err), false);
+            err = m_d3d11.openxr().create_swapchains();
+        }
 
         if (err) {
             m_openxr->error = err.value();
@@ -1785,8 +1799,19 @@ void VR::on_config_load(const utility::Config& cfg, bool set_defaults) {
             m_first_config_load = false; // because the frontend can request config reloads
 
             if (get_runtime()->is_openxr()) {
+                m_openxr->configure_desktop_spectator(
+                    is_cinematic_desktop_spectator_requested(),
+                    get_desktop_spectator_eye(),
+                    get_desktop_spectator_aspect(),
+                                !g_framework->is_dx12(),
+                    is_extreme_compatibility_mode_enabled(),
+                    is_using_2d_screen());
                 spdlog::info("[VR] Finishing up OpenXR initialization");
                 initialize_openxr_swapchains();
+            } else if (is_cinematic_desktop_spectator_requested()) {
+                constexpr auto reason = "Cinematic spectator requires OpenXR; using DesktopRecordingFix_V2";
+                spdlog::info("[VR][CinematicSpectator] {}", reason);
+                nrc_debug::log("CINEMATIC_SPECTATOR", reason);
             }
         }
     }
@@ -2218,6 +2243,12 @@ void VR::on_present() {
     }
 }
 
+void VR::on_post_slate_draw_window(void*, void*, sdk::FViewportInfo*) {
+    if (!m_is_d3d12) {
+        m_d3d11.on_post_slate_draw_window(this);
+    }
+}
+
 void VR::on_post_present() {
     FrameMarkNamed("Present");
     ZoneScopedN(__FUNCTION__);
@@ -2420,6 +2451,40 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         m_desktop_fix->draw("Desktop Spectator View");
         ImGui::SameLine();
         m_2d_screen_mode->draw("2D Screen Mode");
+
+        m_desktop_spectator_mode->draw("Desktop Spectator Mode");
+        m_desktop_spectator_eye->draw("Desktop Spectator Eye");
+        m_desktop_spectator_aspect->draw("Desktop Spectator Aspect");
+
+        const auto cinematic_requested = is_cinematic_desktop_spectator_requested();
+        if (cinematic_requested || (m_openxr != nullptr && m_openxr->is_desktop_spectator_requested())) {
+            if (get_runtime()->is_openxr() && m_openxr != nullptr) {
+                const auto status = m_openxr->get_desktop_spectator_status();
+                ImGui::TextWrapped(localization::get("Cinematic spectator status: %s"), localization::get(status.data()));
+                ImGui::TextWrapped(
+                    localization::get("Cinematic spectator eye: %s, effective aspect: %.6f"),
+                    localization::get(m_openxr->get_desktop_spectator_eye() == 0 ? "Left Eye" : "Right Eye"),
+                    m_openxr->get_desktop_spectator_effective_aspect());
+
+                const auto pending_reinitialize =
+                    m_openxr->is_desktop_spectator_requested() != cinematic_requested ||
+                    m_openxr->get_desktop_spectator_eye() != get_desktop_spectator_eye() ||
+                    std::abs(m_openxr->get_desktop_spectator_aspect() - get_desktop_spectator_aspect()) > 0.0001f;
+                if (pending_reinitialize) {
+                    ImGui::TextWrapped(localization::get("Cinematic spectator changes require Reinitialize Runtime."));
+                }
+
+                if (!m_openxr->desktop_spectator.fallback_reason.empty()) {
+                    ImGui::TextWrapped(
+                        localization::get("Cinematic spectator fallback: %s"),
+                        m_openxr->desktop_spectator.fallback_reason.c_str());
+                }
+            } else {
+                ImGui::TextWrapped(
+                    localization::get("Cinematic spectator status: %s"), localization::get("Fallback"));
+                ImGui::TextWrapped(localization::get("Cinematic spectator requires Meta OpenXR and D3D11."));
+            }
+        }
 
         ImGui::TextWrapped(localization::get("Render Resolution (per-eye): %d x %d"), get_runtime()->get_width(), get_runtime()->get_height());
         ImGui::TextWrapped(localization::get("Total Render Resolution: %d x %d"), get_runtime()->get_width() * 2, get_runtime()->get_height());

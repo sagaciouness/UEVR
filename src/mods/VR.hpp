@@ -72,6 +72,11 @@ public:
         VERTICAL_MATCHED
     };
 
+    enum DesktopSpectatorMode : int32_t {
+        DESKTOP_SPECTATOR_LEGACY = 0,
+        DESKTOP_SPECTATOR_CINEMATIC = 1,
+    };
+
     static const inline std::string s_action_pose = "/actions/default/in/Pose";
     static const inline std::string s_action_grip_pose = "/actions/default/in/GripPose";
     static const inline std::string s_action_trigger = "/actions/default/in/Trigger";
@@ -137,6 +142,7 @@ public:
 
     void on_present() override;
     void on_post_present() override;
+    void on_post_slate_draw_window(void* renderer, void* command_list, sdk::FViewportInfo* viewport_info) override;
 
     void on_device_reset() override {
         get_runtime()->on_device_reset();
@@ -636,6 +642,18 @@ public:
         return m_grow_rectangle_for_projection_cropping->value();
     }
 
+    bool is_cinematic_desktop_spectator_requested() const {
+        return m_desktop_spectator_mode->value() == DESKTOP_SPECTATOR_CINEMATIC;
+    }
+
+    uint32_t get_desktop_spectator_eye() const {
+        return std::clamp(m_desktop_spectator_eye->value(), 0, 1);
+    }
+
+    float get_desktop_spectator_aspect() const {
+        return m_desktop_spectator_aspect->value();
+    }
+
     vrmod::D3D11Component& d3d11() {
         return m_d3d11;
     }
@@ -880,6 +898,16 @@ private:
         "Matched",
     };
 
+    static const inline std::vector<std::string> s_desktop_spectator_mode_names{
+        "Existing Desktop Fix",
+        "Cinematic 16:9",
+    };
+
+    static const inline std::vector<std::string> s_desktop_spectator_eye_names{
+        "Left Eye",
+        "Right Eye",
+    };
+
     const ModCombo::Ptr m_rendering_method{ ModCombo::create(generate_name("RenderingMethod"), s_rendering_method_names) };
     const ModCombo::Ptr m_synced_afr_method{ ModCombo::create(generate_name("SyncedSequentialMethod"), s_synced_afr_method_names, 1) };
     const ModToggle::Ptr m_extreme_compat_mode{ ModToggle::create(generate_name("ExtremeCompatibilityMode"), false, true) };
@@ -889,6 +917,9 @@ private:
     const ModToggle::Ptr m_disable_hzbocclusion{ ModToggle::create(generate_name("DisableHZBOcclusion"), true, true) };
     const ModToggle::Ptr m_disable_instance_culling{ ModToggle::create(generate_name("DisableInstanceCulling"), true, true) };
     const ModToggle::Ptr m_desktop_fix{ ModToggle::create(generate_name("DesktopRecordingFix_V2"), true) };
+    const ModCombo::Ptr m_desktop_spectator_mode{ModCombo::create(generate_name("DesktopSpectatorMode"), s_desktop_spectator_mode_names)};
+    const ModCombo::Ptr m_desktop_spectator_eye{ModCombo::create(generate_name("DesktopSpectatorEye"), s_desktop_spectator_eye_names, 1)};
+    const ModSlider::Ptr m_desktop_spectator_aspect{ModSlider::create(generate_name("DesktopSpectatorAspect"), 1.0f, 3.0f, 16.0f / 9.0f)};
     const ModToggle::Ptr m_enable_gui{ ModToggle::create(generate_name("EnableGUI"), true) };
     const ModToggle::Ptr m_enable_depth{ ModToggle::create(generate_name("PassDepthToRuntime"), false, true) };
     const ModToggle::Ptr m_decoupled_pitch{ ModToggle::create(generate_name("DecoupledPitch"), false) };
@@ -1035,6 +1066,9 @@ public:
             *m_disable_hzbocclusion,
             *m_disable_instance_culling,
             *m_desktop_fix,
+            *m_desktop_spectator_mode,
+            *m_desktop_spectator_eye,
+            *m_desktop_spectator_aspect,
             *m_enable_gui,
             *m_enable_depth,
             *m_decoupled_pitch,
