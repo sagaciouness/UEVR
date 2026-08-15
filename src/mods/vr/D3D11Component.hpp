@@ -63,6 +63,16 @@ private:
         const RECT& src_rect);
 
     bool ensure_nrc_native_ui_target(VR* vr, ID3D11Device* device, uint32_t width, uint32_t height);
+    struct CinematicSourceRectResult {
+        RECT rect{};
+        std::optional<std::string> error{};
+    };
+
+    CinematicSourceRectResult resolve_cinematic_scene_source_rect(
+        VR* vr,
+        const RECT& eye_rect,
+        const D3D11_TEXTURE2D_DESC& source_desc) const;
+
 
     struct ShaderGlobals {
         DirectX::XMMATRIX mvp{};
@@ -182,6 +192,7 @@ private:
     bool m_last_afr_state{false};
     bool m_cinematic_desktop_logged{false};
     bool m_cinematic_afr_cache_logged{false};
+    uint64_t m_cinematic_source_revision{0};
     bool m_cinematic_afr_restore_logged{false};
     bool m_nrc_ui_hook_configured{false};
     bool m_nrc_ui_redirect_logged{false};

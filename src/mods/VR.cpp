@@ -491,7 +491,9 @@ std::optional<std::string> VR::initialize_openxr() {
         get_desktop_spectator_aspect(),
         !g_framework->is_dx12(),
         is_extreme_compatibility_mode_enabled(),
-        is_using_2d_screen());
+        is_using_2d_screen(),
+        is_desktop_spectator_fov_override_enabled(),
+        get_desktop_spectator_horizontal_fov());
 
     // Step 7: Create a view
     if (!m_openxr->view_configs.empty()){
@@ -1790,6 +1792,11 @@ void VR::on_config_load(const utility::Config& cfg, bool set_defaults) {
     for (IModValue& option : m_options) {
         option.config_load(cfg, set_defaults);
     }
+    auto& spectator_fov = m_desktop_spectator_horizontal_fov->value();
+    spectator_fov = std::isfinite(spectator_fov)
+        ? std::clamp(spectator_fov, 80.0f, 150.0f)
+        : 105.0f;
+
 
     if (get_runtime() != nullptr && get_runtime()->loaded) {
         get_runtime()->on_config_load(cfg, set_defaults);
@@ -1803,9 +1810,11 @@ void VR::on_config_load(const utility::Config& cfg, bool set_defaults) {
                     is_cinematic_desktop_spectator_requested(),
                     get_desktop_spectator_eye(),
                     get_desktop_spectator_aspect(),
-                                !g_framework->is_dx12(),
+                    !g_framework->is_dx12(),
                     is_extreme_compatibility_mode_enabled(),
-                    is_using_2d_screen());
+                    is_using_2d_screen(),
+                    is_desktop_spectator_fov_override_enabled(),
+                    get_desktop_spectator_horizontal_fov());
                 spdlog::info("[VR] Finishing up OpenXR initialization");
                 initialize_openxr_swapchains();
             } else if (is_cinematic_desktop_spectator_requested()) {
@@ -2455,8 +2464,22 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         m_desktop_spectator_mode->draw("Desktop Spectator Mode");
         m_desktop_spectator_eye->draw("Desktop Spectator Eye");
         m_desktop_spectator_aspect->draw("Desktop Spectator Aspect");
+        m_desktop_spectator_fov_override->draw("Desktop Spectator FOV Override");
+        m_desktop_spectator_horizontal_fov->draw("Desktop Spectator Horizontal FOV");
+
+        if (get_runtime()->is_openxr() && m_openxr != nullptr) {
+            m_openxr->request_desktop_spectator_fov(
+                is_desktop_spectator_fov_override_enabled(),
+                get_desktop_spectator_horizontal_fov());
+        }
 
         const auto cinematic_requested = is_cinematic_desktop_spectator_requested();
+        if (is_desktop_spectator_fov_override_enabled() && !cinematic_requested) {
+            ImGui::TextWrapped(
+                localization::get("Cinematic spectator FOV override unavailable: %s"),
+                localization::get("Custom spectator FOV requires Cinematic 16:9 mode"));
+        }
+
         if (cinematic_requested || (m_openxr != nullptr && m_openxr->is_desktop_spectator_requested())) {
             if (get_runtime()->is_openxr() && m_openxr != nullptr) {
                 const auto status = m_openxr->get_desktop_spectator_status();
@@ -2465,6 +2488,19 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                     localization::get("Cinematic spectator eye: %s, effective aspect: %.6f"),
                     localization::get(m_openxr->get_desktop_spectator_eye() == 0 ? "Left Eye" : "Right Eye"),
                     m_openxr->get_desktop_spectator_effective_aspect());
+                ImGui::TextWrapped(
+                    localization::get("Cinematic spectator FOV: baseline %.1f, target %.1f, effective %.1f degrees (%s)"),
+                    m_openxr->get_desktop_spectator_automatic_fov(),
+                    m_openxr->get_desktop_spectator_target_fov(),
+                    m_openxr->get_desktop_spectator_effective_fov(),
+                    localization::get(m_openxr->get_desktop_spectator_fov_mode().data()));
+
+                if (!m_openxr->desktop_spectator.fov_override_reason.empty()) {
+                    ImGui::TextWrapped(
+                        localization::get("Cinematic spectator FOV override unavailable: %s"),
+                        localization::get(m_openxr->desktop_spectator.fov_override_reason.c_str()));
+                }
+
 
                 const auto pending_reinitialize =
                     m_openxr->is_desktop_spectator_requested() != cinematic_requested ||

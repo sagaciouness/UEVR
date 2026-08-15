@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <unordered_set>
 #include <deque>
 
@@ -42,6 +43,12 @@ struct OpenXR final : public VRRuntime {
         Fallback,
     };
 
+    enum class DesktopSpectatorFovMode {
+        Automatic,
+        Cropped,
+        Expanded,
+    };
+
     struct DesktopSpectatorState {
         DesktopSpectatorStatus status{DesktopSpectatorStatus::Disabled};
         bool requested{false};
@@ -53,10 +60,18 @@ struct OpenXR final : public VRRuntime {
         uint32_t expanded_width{0};
         float horizontal_scale{1.0f};
         float effective_aspect{16.0f / 9.0f};
+        bool fov_override_enabled{false};
+        float target_horizontal_fov{105.0f};
+        float automatic_horizontal_fov{0.0f};
+        float effective_horizontal_fov{0.0f};
+        float projection_scale{1.0f};
+        DesktopSpectatorFovMode fov_mode{DesktopSpectatorFovMode::Automatic};
+        std::array<float, 4> desktop_source_bounds{0.0f, 1.0f, 0.0f, 1.0f};
         std::array<std::array<float, 4>, 2> raw_fov{};
         std::array<std::array<float, 4>, 2> expanded_fov{};
         std::array<std::array<float, 4>, 2> uv_bounds{};
         std::string fallback_reason{};
+        std::string fov_override_reason{};
         bool submission_logged{false};
         bool fov_wait_logged{false};
     };
@@ -119,7 +134,10 @@ struct OpenXR final : public VRRuntime {
     VRRuntime::Error update_matrices(float nearz, float farz) override;
     VRRuntime::Error update_input() override;
 
-    void configure_desktop_spectator(bool requested, uint32_t eye, float aspect, bool d3d11, bool extreme, bool using_2d_screen);
+    void configure_desktop_spectator(
+        bool requested, uint32_t eye, float aspect, bool d3d11, bool extreme, bool using_2d_screen,
+        bool fov_override_enabled, float horizontal_fov);
+    void request_desktop_spectator_fov(bool enabled, float horizontal_fov);
     void initialize_desktop_spectator();
     void fallback_desktop_spectator(std::string reason, bool request_render_reset = true);
 
@@ -128,7 +146,13 @@ struct OpenXR final : public VRRuntime {
     uint32_t get_desktop_spectator_eye() const { return desktop_spectator.eye; }
     float get_desktop_spectator_aspect() const { return desktop_spectator.aspect; }
     float get_desktop_spectator_effective_aspect() const { return desktop_spectator.effective_aspect; }
+    float get_desktop_spectator_automatic_fov() const { return desktop_spectator.automatic_horizontal_fov; }
+    float get_desktop_spectator_target_fov() const { return desktop_spectator.target_horizontal_fov; }
+    float get_desktop_spectator_effective_fov() const { return desktop_spectator.effective_horizontal_fov; }
+    const auto& get_desktop_spectator_source_bounds() const { return desktop_spectator.desktop_source_bounds; }
+    uint64_t get_desktop_spectator_revision() const { return desktop_spectator_revision.load(std::memory_order_acquire); }
     std::string_view get_desktop_spectator_status() const;
+    std::string_view get_desktop_spectator_fov_mode() const;
 
     void destroy() override;
     void enqueue_render_poses(uint32_t frame_count) override;
@@ -245,6 +269,11 @@ public:
     std::unordered_map<uint32_t, Swapchain> swapchains{}; // SwapchainIndex -> Swapchain
     std::vector<XrView> views{};
     DesktopSpectatorState desktop_spectator{};
+    std::atomic_bool desktop_spectator_fov_update_pending{false};
+    std::atomic_bool pending_desktop_spectator_fov_enabled{false};
+    std::atomic<float> pending_desktop_spectator_horizontal_fov{105.0f};
+    std::atomic_uint64_t desktop_spectator_revision{0};
+    bool is_meta_openxr_system{false};
     std::vector<XrView> stage_views{};
 
     //std::deque<std::vector<XrView>> stage_view_queue{};

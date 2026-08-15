@@ -325,6 +325,80 @@ bool D3D11Component::ensure_nrc_native_ui_target(
     nrc_debug::log("UI_RENDER_TARGET", message);
     return true;
 }
+D3D11Component::CinematicSourceRectResult D3D11Component::resolve_cinematic_scene_source_rect(
+    VR* vr,
+    const RECT& eye_rect,
+    const D3D11_TEXTURE2D_DESC& source_desc) const
+{
+    CinematicSourceRectResult result{};
+    result.rect = eye_rect;
+
+    if (vr == nullptr || vr->m_openxr == nullptr ||
+        !vr->m_openxr->is_desktop_spectator_active())
+    {
+        result.error = "Cinematic OpenXR spectator state is unavailable";
+        return result;
+    }
+
+    const auto width = eye_rect.right - eye_rect.left;
+    const auto height = eye_rect.bottom - eye_rect.top;
+    if (width <= 0 || height <= 0 ||
+        eye_rect.left < 0 || eye_rect.top < 0 ||
+        eye_rect.right > static_cast<LONG>(source_desc.Width) ||
+        eye_rect.bottom > static_cast<LONG>(source_desc.Height))
+    {
+        result.error = "Cinematic desktop source rectangle is outside the source texture";
+        return result;
+    }
+
+    const auto& bounds = vr->m_openxr->get_desktop_spectator_source_bounds();
+    if (!std::isfinite(bounds[0]) || !std::isfinite(bounds[1]) ||
+        !std::isfinite(bounds[2]) || !std::isfinite(bounds[3]) ||
+        bounds[0] < 0.0f || bounds[1] > 1.0f || bounds[0] >= bounds[1] ||
+        bounds[2] < 0.0f || bounds[3] > 1.0f || bounds[2] >= bounds[3])
+    {
+        result.error = "Cinematic desktop source UV bounds are invalid";
+        return result;
+    }
+
+    result.rect.left = eye_rect.left + static_cast<LONG>(std::lround(static_cast<float>(width) * bounds[0]));
+    result.rect.right = eye_rect.left + static_cast<LONG>(std::lround(static_cast<float>(width) * bounds[1]));
+    result.rect.top = eye_rect.top + static_cast<LONG>(std::lround(static_cast<float>(height) * bounds[2]));
+    result.rect.bottom = eye_rect.top + static_cast<LONG>(std::lround(static_cast<float>(height) * bounds[3]));
+
+    result.rect.left = std::clamp(result.rect.left, eye_rect.left, eye_rect.right);
+    result.rect.right = std::clamp(result.rect.right, eye_rect.left, eye_rect.right);
+    result.rect.top = std::clamp(result.rect.top, eye_rect.top, eye_rect.bottom);
+    result.rect.bottom = std::clamp(result.rect.bottom, eye_rect.top, eye_rect.bottom);
+
+    const auto source_width = static_cast<float>(result.rect.right - result.rect.left);
+    const auto source_height = static_cast<float>(result.rect.bottom - result.rect.top);
+    const auto desktop_width = static_cast<float>(m_real_backbuffer_size[0]);
+    const auto desktop_height = static_cast<float>(m_real_backbuffer_size[1]);
+    const auto source_aspect = source_height > 0.0f ? source_width / source_height : 0.0f;
+    const auto desktop_aspect = desktop_height > 0.0f ? desktop_width / desktop_height : 0.0f;
+    const auto aspect_tolerance = std::max(
+        source_height > 0.0f ? 1.0f / source_height : 1.0f,
+        desktop_height > 0.0f ? 1.0f / desktop_height : 1.0f);
+
+    if (source_width <= 0.0f || source_height <= 0.0f) {
+        result.error = "Cinematic desktop source rectangle is empty";
+    } else if (std::abs(desktop_aspect - vr->m_openxr->get_desktop_spectator_aspect()) > aspect_tolerance) {
+        result.error = std::format(
+            "Desktop BackBuffer aspect {} does not match requested aspect {}",
+            desktop_aspect,
+            vr->m_openxr->get_desktop_spectator_aspect());
+    } else if (std::abs(source_aspect - desktop_aspect) > aspect_tolerance) {
+        result.error = std::format(
+            "Cinematic source aspect {} does not match Desktop BackBuffer aspect {}",
+            source_aspect,
+            desktop_aspect);
+    }
+
+    return result;
+}
+
+
 
 vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
     if (m_force_reset || m_last_afr_state != vr->is_using_afr()) {
@@ -1272,43 +1346,44 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                     source_name = "afr-current-eye";
                 }
 
-                const auto source_width = static_cast<float>(source_rect.right - source_rect.left);
-                const auto source_height = static_cast<float>(source_rect.bottom - source_rect.top);
-                const auto desktop_width = static_cast<float>(m_real_backbuffer_size[0]);
-                const auto desktop_height = static_cast<float>(m_real_backbuffer_size[1]);
-                const auto source_aspect = source_height > 0.0f ? source_width / source_height : 0.0f;
-                const auto desktop_aspect = desktop_height > 0.0f ? desktop_width / desktop_height : 0.0f;
-                const auto aspect_tolerance = std::max(
-                    source_height > 0.0f ? 1.0f / source_height : 1.0f,
-                    desktop_height > 0.0f ? 1.0f / desktop_height : 1.0f);
-
                 std::optional<std::string> fallback_reason{};
                 if (invalid_source_layout) {
                     fallback_reason = std::format(
                         "Cinematic desktop source width {} is not an even double-wide texture", source_desc.Width);
-                } else if (source_width <= 0.0f || source_height <= 0.0f) {
-                    fallback_reason = "Cinematic desktop source rectangle is empty";
-                } else if (std::abs(desktop_aspect - vr->m_openxr->get_desktop_spectator_aspect()) > aspect_tolerance) {
-                    fallback_reason = std::format(
-                        "Desktop BackBuffer aspect {} does not match requested aspect {}",
-                        desktop_aspect,
-                        vr->m_openxr->get_desktop_spectator_aspect());
-                } else if (std::abs(source_aspect - desktop_aspect) > aspect_tolerance) {
-                    fallback_reason = std::format(
-                        "Expanded eye aspect {} does not match Desktop BackBuffer aspect {}",
-                        source_aspect,
-                        desktop_aspect);
+                } else {
+                    auto resolved_source = resolve_cinematic_scene_source_rect(
+                        vr, source_rect, source_desc);
+                    source_rect = resolved_source.rect;
+                    fallback_reason = std::move(resolved_source.error);
+                }
+
+                const auto spectator_revision = vr->m_openxr->get_desktop_spectator_revision();
+                if (m_cinematic_source_revision != spectator_revision) {
+                    m_cinematic_source_revision = spectator_revision;
+                    m_cinematic_desktop_logged = false;
+                    m_nrc_post_slate_cache_logged = false;
+                    m_nrc_post_slate_restore_logged = false;
                 }
 
                 if (fallback_reason) {
                     vr->m_openxr->fallback_desktop_spectator(*fallback_reason);
                     cinematic_desktop = false;
                 } else if (!m_cinematic_desktop_logged) {
+                    const auto& desktop_uv = vr->m_openxr->get_desktop_spectator_source_bounds();
                     const auto message = std::format(
-                        "Desktop source={} eye={} frame={} selected_frame=true rect=[{},{},{},{}] BackBuffer={}x{} AFR={} Extreme={} cache_before={}",
+                        "Desktop source={} eye={} frame={} mode={} baseline_fov={} target_fov={} effective_fov={} "
+                        "source_uv=[{},{},{},{}] rect=[{},{},{},{}] BackBuffer={}x{} AFR={} Extreme={} cache_before={}",
                         source_name,
                         selected_eye == 0 ? "left" : "right",
                         vr->m_render_frame_count,
+                        vr->m_openxr->get_desktop_spectator_fov_mode(),
+                        vr->m_openxr->get_desktop_spectator_automatic_fov(),
+                        vr->m_openxr->get_desktop_spectator_target_fov(),
+                        vr->m_openxr->get_desktop_spectator_effective_fov(),
+                        desktop_uv[0],
+                        desktop_uv[1],
+                        desktop_uv[2],
+                        desktop_uv[3],
                         source_rect.left,
                         source_rect.top,
                         source_rect.right,
@@ -1488,10 +1563,24 @@ void D3D11Component::on_post_slate_draw_window(VR* vr) {
         0, 0,
         static_cast<LONG>(m_real_backbuffer_size[0]),
         static_cast<LONG>(m_real_backbuffer_size[1])};
-    RECT scene_rect{
+    RECT scene_eye_rect{
         0, 0,
         static_cast<LONG>(scene_desc.Width),
         static_cast<LONG>(scene_desc.Height)};
+    auto resolved_source = resolve_cinematic_scene_source_rect(vr, scene_eye_rect, scene_desc);
+    if (resolved_source.error) {
+        vr->m_openxr->fallback_desktop_spectator(*resolved_source.error);
+        return;
+    }
+    const auto scene_rect = resolved_source.rect;
+
+    const auto spectator_revision = vr->m_openxr->get_desktop_spectator_revision();
+    if (m_cinematic_source_revision != spectator_revision) {
+        m_cinematic_source_revision = spectator_revision;
+        m_cinematic_desktop_logged = false;
+        m_nrc_post_slate_cache_logged = false;
+        m_nrc_post_slate_restore_logged = false;
+    }
 
     m_backbuffer_batch->Begin();
     m_backbuffer_batch->SetViewport(viewport);
@@ -1506,11 +1595,21 @@ void D3D11Component::on_post_slate_draw_window(VR* vr) {
         const auto generation = vr->m_fake_stereo_hook != nullptr
             ? vr->m_fake_stereo_hook->get_slate_draw_window_generation()
             : 0;
+        const auto& desktop_uv = vr->m_openxr->get_desktop_spectator_source_bounds();
         const auto message = std::format(
-            "Post-Slate desktop cache updated generation={} frame={} eye={} scene={}x{} cache={}x{}",
+            "Post-Slate desktop cache updated generation={} frame={} eye={} source_uv=[{},{},{},{}] "
+            "scene_rect=[{},{},{},{}] scene={}x{} cache={}x{}",
             generation,
             vr->m_render_frame_count,
             selected_eye == 0 ? "left" : "right",
+            desktop_uv[0],
+            desktop_uv[1],
+            desktop_uv[2],
+            desktop_uv[3],
+            scene_rect.left,
+            scene_rect.top,
+            scene_rect.right,
+            scene_rect.bottom,
             scene_desc.Width,
             scene_desc.Height,
             cache_desc.Width,
@@ -1585,6 +1684,7 @@ void D3D11Component::on_reset(VR* vr) {
     m_game_batch.reset();
     m_is_shader_setup = false;
     m_cinematic_desktop_logged = false;
+    m_cinematic_source_revision = 0;
     m_cinematic_afr_cache_logged = false;
     m_cinematic_afr_restore_logged = false;
     m_nrc_post_slate_cache_logged = false;

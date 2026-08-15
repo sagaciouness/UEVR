@@ -1,4 +1,6 @@
 #include "Localization.hpp"
+#include <format>
+#include <spdlog/spdlog.h>
 
 #include <glm/gtx/intersect.hpp>
 #include <imgui_internal.h>
@@ -6,6 +8,7 @@
 #include "Framework.hpp"
 #include "../VR.hpp"
 #include "../utility/ImGui.hpp"
+#include <utility/NrcDebug.hpp>
 
 #include "OverlayComponent.hpp"
 
@@ -201,6 +204,15 @@ void OverlayComponent::on_config_load(const utility::Config& cfg, bool set_defau
     for (IModValue& option : m_options) {
         option.config_load(cfg, set_defaults);
     }
+    const auto message = std::format(
+        "HUD pose loaded X={} Y={} Distance={} FollowView={}",
+        m_slate_x_offset->value(),
+        m_slate_y_offset->value(),
+        m_slate_distance->value(),
+        m_ui_follows_view->value());
+    spdlog::info("[VR][HUD] {}", message);
+    nrc_debug::log("HUD_POSITION", message);
+
 }
 
 void OverlayComponent::on_draw_ui() {
@@ -214,15 +226,42 @@ void OverlayComponent::on_draw_ui() {
             }
         }
 
-        float ui_offset[] { m_slate_x_offset->value(), m_slate_y_offset->value(), m_slate_distance->value() };
+        auto horizontal_position = m_slate_x_offset->value();
+        auto vertical_position = m_slate_y_offset->value();
+        auto hud_distance = m_slate_distance->value();
+        bool hud_pose_changed = false;
 
-        if (ImGui::SliderFloat3(localization::get("UI Offset"), ui_offset, -10.0f, 10.0f)) {
-            m_slate_x_offset->value() = ui_offset[0];
-            m_slate_y_offset->value() = ui_offset[1];
-            m_slate_distance->value() = ui_offset[2];
+        hud_pose_changed |= ImGui::DragFloat(
+            localization::get("HUD Horizontal Position"),
+            &horizontal_position, 0.01f, -10.0f, 10.0f, "%.2f m");
+        hud_pose_changed |= ImGui::DragFloat(
+            localization::get("HUD Vertical Position"),
+            &vertical_position, 0.01f, -10.0f, 10.0f, "%.2f m");
+        hud_pose_changed |= ImGui::DragFloat(
+            localization::get("HUD Distance"),
+            &hud_distance, 0.01f, 0.5f, 10.0f, "%.2f m");
+
+        if (ImGui::Button(localization::get("Reset HUD Position"))) {
+            horizontal_position = 0.0f;
+            vertical_position = 0.0f;
+            hud_distance = 2.0f;
+            hud_pose_changed = true;
         }
 
-        m_slate_distance->draw("UI Distance");
+        if (hud_pose_changed) {
+            m_slate_x_offset->value() = std::clamp(horizontal_position, -10.0f, 10.0f);
+            m_slate_y_offset->value() = std::clamp(vertical_position, -10.0f, 10.0f);
+            m_slate_distance->value() = std::clamp(hud_distance, 0.5f, 10.0f);
+
+            const auto message = std::format(
+                "HUD pose X={} Y={} Distance={} FollowView={}",
+                m_slate_x_offset->value(),
+                m_slate_y_offset->value(),
+                m_slate_distance->value(),
+                m_ui_follows_view->value());
+            spdlog::info("[VR][HUD] {}", message);
+            nrc_debug::log("HUD_POSITION", message);
+        }
         m_slate_size->draw("UI Size");
         m_ui_follows_view->draw("UI Follows View");
         ImGui::SameLine();

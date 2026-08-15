@@ -654,6 +654,14 @@ public:
         return m_desktop_spectator_aspect->value();
     }
 
+    bool is_desktop_spectator_fov_override_enabled() const {
+        return m_desktop_spectator_fov_override->value();
+    }
+
+    float get_desktop_spectator_horizontal_fov() const {
+        return m_desktop_spectator_horizontal_fov->value();
+    }
+
     vrmod::D3D11Component& d3d11() {
         return m_d3d11;
     }
@@ -920,6 +928,8 @@ private:
     const ModCombo::Ptr m_desktop_spectator_mode{ModCombo::create(generate_name("DesktopSpectatorMode"), s_desktop_spectator_mode_names)};
     const ModCombo::Ptr m_desktop_spectator_eye{ModCombo::create(generate_name("DesktopSpectatorEye"), s_desktop_spectator_eye_names, 1)};
     const ModSlider::Ptr m_desktop_spectator_aspect{ModSlider::create(generate_name("DesktopSpectatorAspect"), 1.0f, 3.0f, 16.0f / 9.0f)};
+    const ModToggle::Ptr m_desktop_spectator_fov_override{ModToggle::create(generate_name("DesktopSpectatorFOVOverride"), false)};
+    const ModSlider::Ptr m_desktop_spectator_horizontal_fov{ModSlider::create(generate_name("DesktopSpectatorHorizontalFOV"), 80.0f, 150.0f, 105.0f)};
     const ModToggle::Ptr m_enable_gui{ ModToggle::create(generate_name("EnableGUI"), true) };
     const ModToggle::Ptr m_enable_depth{ ModToggle::create(generate_name("PassDepthToRuntime"), false, true) };
     const ModToggle::Ptr m_decoupled_pitch{ ModToggle::create(generate_name("DecoupledPitch"), false) };
@@ -1069,6 +1079,8 @@ public:
             *m_desktop_spectator_mode,
             *m_desktop_spectator_eye,
             *m_desktop_spectator_aspect,
+            *m_desktop_spectator_fov_override,
+            *m_desktop_spectator_horizontal_fov,
             *m_enable_gui,
             *m_enable_depth,
             *m_decoupled_pitch,
